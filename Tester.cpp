@@ -194,7 +194,9 @@ static Clock m_clock;
  * So we need to add a good checksum.
  *
  * Furthermore, each packet needs to be tagged with a unique ID number so that
- * we can tell which code group it is from, for a start.
+ * we can tell which code group it is from, for a start.  And we need a way to
+ * check if a packet is corrupted that is stronger than the normal (sometimes
+ * optional) 16-bit UDP CRC.
  *
  * Happily, it turns out that an authenticated encryption scheme with a stream-
  * cipher and MAC provides security, integrity, and a useful ID number.
@@ -681,7 +683,6 @@ public:
 			}
 
 			// TODO: Implement IV-based packet-loss estimator
-			// TODO: Implement ping/pong: Trigger whenever we see a new code group
 			// TODO: Implement decoder time-based buffering
 
 			if (_has_symbols) {
@@ -714,4 +715,5 @@ int main()
 }
 
 
+// TODO: Test it!
 
