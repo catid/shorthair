@@ -230,6 +230,12 @@ static Clock m_clock;
 
 
 static const int SKEY_BYTES = 32;
+static const int MAX_CHUNK_SIZE = 1400;
+static const int PROTOCOL_OVERHEAD = 1 + 4 + 2;
+static const int MAX_PROTOCOL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
+static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
+static const int PONG_SIZE = 1 + 4 + 4;
+
 
 
 class LossEstimator {
@@ -322,7 +328,12 @@ class IDataSource {
 public:
 	// Returns number of bytes actually read or 0 for end of data
 	virtual int ReadData(void *buffer, int max_bytes) = 0;
+
+	// Data to send to remote host
 	virtual void SendData(void *buffer, int bytes) = 0;
+
+	// Called when disconnected for some reason (timeout, etc)
+	virtual void Disconnected(int reason) = 0;
 };
 
 
@@ -338,11 +349,6 @@ struct SourceSettings {
 
 
 class BrookSource {
-	static const int MAX_CHUNK_SIZE = 1400;
-	static const int PROTOCOL_OVERHEAD = 1 + 4;
-	static const int MAX_PROTOCOL_OVERHEAD = 1 + 4 + calico::Calico::OVERHEAD;
-	static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
-
 	SourceSettings _settings;
 
 	calico::Calico _cipher;
@@ -362,6 +368,9 @@ class BrookSource {
 	u32 _input_symbol;
 	u32 _check_symbol;
 	u8 _code_group;
+
+	// Swap times for each code group for RTT calculation
+	u32 _group_stamps[256];
 
 	// Buffer of original data being sent for next swap
 	vector<u8> _buffer;
@@ -395,6 +404,10 @@ class BrookSource {
 
 	// Send a check symbol
 	void SendCheckSymbol() {
+		const u16 block_count = _encoder.BlockCount();
+
+		CAT_ENFORCE(_check_symbol >= block_count);
+
 		u8 buffer[MAX_PKT_SIZE];
 
 		// Prepend the code group
@@ -403,7 +416,8 @@ class BrookSource {
 		// Add check symbol number
 		*(u32*)(buffer + 1) = getLE(_check_symbol);
 
-		CAT_ENFORCE(_check_symbol >= _encoder.BlockCount());
+		// Add block count
+		*(u16*)(buffer + 1 + 4) = getLE(block_count);
 
 		// FEC encode
 		u32 bytes = _encoder.Encode(_check_symbol, buffer + PROTOCOL_OVERHEAD);
@@ -432,6 +446,33 @@ class BrookSource {
 		// TODO: Calculate _check_symbols_max and _check_symbols_per_ms
 	}
 
+	// From pong message, round-trip time
+	CAT_INLINE void UpdateRTT(int ms) {
+		CAT_ENFORCE(ms >= 0);
+
+		// Approximate delay with RTT / 2.
+		// TODO: Adjust to match the asymmetry of your channel,
+		// or use exact time measurements when available instead.
+		int delay = ms / 2;
+
+		_delay.Insert(delay);
+		_delay.Calculate();
+
+		CalculateInterval();
+	}
+
+	// From pong message, number of packets seen out of count in interval
+	CAT_INLINE void UpdateLoss(u32 seen, u32 count) {
+		CAT_ENFORCE(seen <= count);
+
+		if (count > 0) {
+			_loss.Insert(seen, count);
+			_loss.Calculate();
+
+			CalculateRate();
+		}
+	}
+
 public:
 	// On startup:
 	bool Initialize(const u8 key[SKEY_BYTES], const SourceSettings &settings) {
@@ -450,40 +491,17 @@ public:
 		_input_symbol = 0;
 		_check_symbol = 0;
 
+		CAT_OBJCLR(_group_stamps);
+
 		CalculateInterval();
 		CalculateRate();
 
 		CAT_ENFORCE(_settings.chunk_size <= MAX_CHUNK_SIZE);
 	}
 
-	// From pong message, round-trip time
-	void UpdateRTT(int ms) {
-		CAT_ENFORCE(ms >= 0);
-
-		// Approximate delay with RTT / 2.
-		// TODO: Adjust to match the asymmetry of your channel,
-		// or use exact time measurements when available instead.
-		int delay = ms / 2;
-
-		_delay.Insert(delay);
-		_delay.Calculate();
-
-		CalculateInterval();
-	}
-
-	// From pong message, number of packets seen out of count in interval
-	void UpdateLoss(u32 seen, u32 count) {
-		CAT_ENFORCE(seen <= count);
-
-		_loss.Insert(seen, count);
-		_loss.Calculate();
-
-		CalculateRate();
-	}
-
 	// Called once per tick, send all pending data and check symbols, providing
 	// a timestamp in milliseconds
-	void Send(u32 ms) {
+	void Tick(u32 ms) {
 		// If it is time to swap the buffer,
 		if ((s32)(ms - _swap_trigger) > 0) {
 			_swap_trigger = ms + _swap_interval;
@@ -510,8 +528,17 @@ public:
 			// Add next code group (this is part of the code group after the next swap)
 			buffer[0] = _code_group + 1;
 
+			// If just swapped,
+			if (_input_symbol == 0) {
+				// Tag this new group with the start time
+				_group_stamps[_code_group + 1] = ms;
+			}
+
 			// Add check symbol number
 			*(u32*)(buffer + 1) = getLE(_input_symbol);
+
+			// Set block count to zero for input symbols
+			*(u16*)(buffer + 1 + 4) = 0;
 
 			// Encrypt
 			bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
@@ -519,6 +546,7 @@ public:
 			// Transmit
 			_settings.source->SendData(buffer, bytes);
 
+			// Next input symbol id
 			++_input_symbol;
 		}
 
@@ -536,15 +564,136 @@ public:
 
 		_last_tick = ms;
 	}
+
+	// On packet received
+	void Recv(u32 ms, u8 *pkt, int len) {
+		u64 iv;
+		len = _cipher.Decrypt(pkt, len, iv);
+
+		// If it is a pong,
+		if (len == PONG_SIZE) {
+			// Read packet data
+			u8 code_group = pkt[0];
+			u32 seen = getLE(*(u32*)(pkt + 1));
+			u32 count = getLE(*(u32*)(pkt + 1 + 4));
+
+			// Calculate RTT
+			int rtt = ms - _group_stamps[code_group];
+
+			// Compute updates
+			UpdateRTT(rtt);
+			UpdateLoss(seen, count);
+
+			// TODO: Keep alive
+		}
+	}
+};
+
+
+
+
+
+
+class IDataSink {
+public:
+	// Called with data from remote host
+	virtual void OnData(void *buffer, int bytes) = 0;
+
+	// Data to send to remote host
+	virtual void SendData(void *buffer, int bytes) = 0;
+
+	// Called when disconnected for some reason (timeout, etc)
+	virtual void Disconnected(int reason) = 0;
+};
+
+
+struct SinkSettings {
+	int chunk_size;
+	IDataSink *sink;
 };
 
 
 class BrookSink {
+	SinkSettings _settings;
+
+	calico::Calico _cipher;
+
+	wirehair::Encoder _encoder;
+
+	bool _has_symbols;
+	int _active_code_group;
+
+	u32 _seen, _count;
+
 public:
-	// TODO: Implement ping/pong: Trigger whenever we see a new code group
-	// TODO: Implement decoder time-based buffering
-	// TODO: Implement IV-based packet-loss estimator
-	// TODO: Handle code group wrap
+	// On startup:
+	bool Initialize(const u8 key[SKEY_BYTES], const SinkSettings &settings) {
+		if (_cipher.Initialize(key, "BROOK", calico::INITIATOR)) {
+			return false;
+		}
+
+		_settings = settings;
+
+		_has_symbols = false;
+		_active_code_group = 0;
+	}
+
+	// Send collected statistics
+	void SendPong(int code_group) {
+		u8 pkt[PONG_SIZE + calico::Calico::OVERHEAD];
+
+		// Write packet
+		pkt[0] = (u8)code_group;
+		*(u32*)(pkt + 1) = getLE(_seen);
+		*(u32*)(pkt + 1 + 4) = getLE(_count);
+
+		// Reset statistics
+		_seen = 0;
+		_count = 0;
+
+		// Encrypt pong
+		int len = _cipher.Encrypt(pkt, PONG_SIZE, pkt, sizeof(pkt));
+
+		CAT_DEBUG_ENFORCE(len == sizeof(pkt));
+
+		// Send it
+		_settings.sink->SendData(pkt, len);
+	}
+
+	// On packet received
+	void Recv(u8 *pkt, int len) {
+		u64 iv;
+		len = _cipher.Decrypt(pkt, len, iv);
+
+		// If packet may be valid,
+		if (len > PROTOCOL_OVERHEAD) {
+			// Read packet data
+			u8 code_group = pkt[0];
+			u32 id = getLE(*(u32*)(pkt + 1));
+			u16 block_count = getLE(*(u16*)(pkt + 1 + 4));
+			u8 *data = pkt + PROTOCOL_OVERHEAD;
+
+			// Block count > 0 implies it is a check symbol, otherwise it is data
+
+			// Pong first packet of each group
+			if (id == 0 && block_count == 0) {
+				SendPong(code_group);
+			}
+
+			// TODO: Implement IV-based packet-loss estimator
+			// TODO: Implement ping/pong: Trigger whenever we see a new code group
+			// TODO: Implement decoder time-based buffering
+
+			if (_has_symbols) {
+			} else {
+			}
+		}
+	}
+
+	// Called occasionally to check for timeouts
+	void Tick() {
+		// TODO: Keep alive
+	}
 };
 
 
