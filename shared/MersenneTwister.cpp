@@ -249,3 +249,201 @@ void MersenneTwister::Generate(void *buffer, int bytes)
         break;
     }
 }
+
+
+#include <cmath>
+using namespace std;
+
+// Nor ziggurat
+static int kn[128];
+static float fn[128];
+static float wn[128];
+
+// Exp ziggurat
+static int ke[256];
+static float fe[256];
+static float we[256];
+
+void MersenneTwister::InitializeNor() {
+	double dn = 3.442619855899;
+	int i;
+	const double m1 = 2147483648.0;
+	double q;
+	double tn = 3.442619855899;
+	const double vn = 9.91256303526217E-03;
+
+	q = vn / exp ( - 0.5 * dn * dn );
+
+	kn[0] = ( int ) ( ( dn / q ) * m1 );
+	kn[1] = 0;
+
+	wn[0] = ( float ) ( q / m1 );
+	wn[127] = ( float ) ( dn / m1 );
+
+	fn[0] = 1.0;
+	fn[127] = ( float ) ( exp ( - 0.5 * dn * dn ) );
+
+	for ( i = 126; 1 <= i; i-- )
+	{
+		dn = sqrt ( - 2.0 * log ( vn / dn + exp ( - 0.5 * dn * dn ) ) );
+		kn[i+1] = ( int ) ( ( dn / tn ) * m1 );
+		tn = dn;
+		fn[i] = ( float ) ( exp ( - 0.5 * dn * dn ) );
+		wn[i] = ( float ) ( dn / m1 );
+	}
+}
+
+void MersenneTwister::InitializeExp() {
+	double de = 7.697117470131487;
+	int i;
+	const double m2 = 2147483648.0;
+	double q;
+	double te = 7.697117470131487;
+	const double ve = 3.949659822581572E-03;
+
+	q = ve / exp ( - de );
+
+	ke[0] = ( int ) ( ( de / q ) * m2 );
+	ke[1] = 0;
+
+	we[0] = ( float ) ( q / m2 );
+	we[255] = ( float ) ( de / m2 );
+
+	fe[0] = 1.0;
+	fe[255] = ( float ) ( exp ( - de ) );
+
+	for ( i = 254; 1 <= i; i-- )
+	{
+		de = - log ( ve / de + exp ( - de ) );
+		ke[i+1] = ( int ) ( ( de / te ) * m2 );
+		te = de;
+		fe[i] = ( float ) ( exp ( - de ) );
+		we[i] = ( float ) ( de / m2 );
+	}
+}
+
+float MersenneTwister::Nor() {
+	s32 hz;
+	s32 iz;
+	const float r = 3.442620;
+	float value;
+	float x;
+	float y;
+
+	hz = Generate();
+	iz = ( hz & 127 );
+
+	if (hz < 0) {
+		hz = -hz;
+	}
+
+	if ( hz < kn[iz] )
+	{
+		value = ( float ) ( hz ) * wn[iz];
+	}
+	else
+	{
+		for ( ; ; )
+		{
+			if ( iz == 0 )
+			{
+				for ( ; ; )
+				{
+					x = - 0.2904764 * log ( Uni() );
+					y = - log ( Uni() );
+					if ( x * x <= y + y )
+					{
+						break;
+					}
+				}
+
+				if ( hz <= 0 )
+				{
+					value = - r - x;
+				}
+				else
+				{
+					value = + r + x;
+				}
+				break;
+			}
+
+			x = ( float ) ( hz ) * wn[iz];
+
+			if ( fn[iz] + Uni() * ( fn[iz-1] - fn[iz] ) < exp ( - 0.5 * x * x ) )
+			{
+				value = x;
+				break;
+			}
+
+			hz = Generate();
+			iz = ( hz & 127 );
+
+			if (hz < 0) {
+				hz = -hz;
+			}
+
+			if ( hz < kn[iz] )
+			{
+				value = ( float ) ( hz ) * wn[iz];
+				break;
+			}
+		}
+	}
+
+	return value;
+}
+
+float MersenneTwister::Exp() {
+	s32 iz;
+	s32 jz;
+	float value;
+	float x;
+
+	jz = Generate();
+	iz = ( jz & 255 );
+
+	if (jz < 0) {
+		jz = -jz;
+	}
+
+	if ( jz < ke[iz] )
+	{
+		value = ( float ) ( jz ) * we[iz];
+	}
+	else
+	{
+		for ( ; ; )
+		{
+			if ( iz == 0 )
+			{
+				value = 7.69711 - log ( Uni() );
+				break;
+			}
+
+			x = ( float ) ( jz ) * we[iz];
+
+			if ( fe[iz] + Uni() * ( fe[iz-1] - fe[iz] ) < exp ( - x ) )
+			{
+				value = x;
+				break;
+			}
+
+			jz = Generate();
+			iz = ( jz & 255 );
+
+			if (jz < 0) {
+				jz = -jz;
+			}
+
+			if ( jz < ke[iz] )
+			{
+				value = ( float ) ( jz ) * we[iz];
+				break;
+			}
+		}
+	}
+
+	return value;
+}
+

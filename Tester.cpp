@@ -40,6 +40,8 @@ public:
 
 int main()
 {
+	MersenneTwister::InitializeNor();
+	MersenneTwister::InitializeExp();
 	m_clock.OnInitialize();
 
 	//FindBadDenseSeeds();
