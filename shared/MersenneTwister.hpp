@@ -131,19 +131,22 @@ public:
 		 *************************************************************** */
 		static union {
 			u32 i;
-			float f;
+			f32 f;
 		} num;
 
-		num.i = 0x40000000 | (Generate() & 0x007fffff);
+		num.i = (Generate() & 0x007fffff) | 0x40000000;
 
-		return num.f - 3.0f;
+		return (num.f - 2.f) / 2.f;
 	}
 
 	// Call these functions before the following (not thread-safe)
 	static void InitializeNor();
 	static void InitializeExp();
 
+	// X~StdNormal: Mean = 0, Var = 1, aX + b -> mean = b, var = a*a
 	float Nor();
+
+	// X~StdExp: Mean = 1, kX ~ Exp(1/k)
 	float Exp();
 };
 

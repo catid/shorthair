@@ -6,19 +6,137 @@ using namespace cat;
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-using namespace std;	
+#include <cmath>
+using namespace std;
 
 static Clock m_clock;
 
 
+static int UDP_PAYLOAD = 1441;
 
-// Model of channel
-// Latency and packetloss
+struct Packet {
+	u32 trigger;
+
+	u8 buffer[UDP_PAYLOAD];
+
+	Packet *next;
+};
+
+
+
+// Event-driven one-way channel simulator
+// Attempt at realistic latency
+// Uniformly distributed packetloss
 
 class Channel {
+	MersenneTwister _rng;		// RNG
+
+	float _drop_rate;			// Ploss [0..1]
+
+	float _lag_min;				// ms
+	float _lag_avg; 			// ms
+	float _lag_sig;	 			// sigma = sqrt(variance), 2sigma = 95% confidence interval
+
+	u32 _ms;					// Simulation time (ms)
+	PacketDelegate _delegate;
+
+	Packet *_head, *_tail;
+
+	bool DropPacket() {
+		return _rng.Uni() < _drop_rate;
+	}
+
+	u32 NextDelay() { // ms
+		// Based on http://www.ieee-infocom.org/2004/papers/37_4.pdf
+		float x = _rng.Nor() * _lag_sig + _lag_avg;
+		if (x < _lag_min) {
+			x = _lag_min;
+		}
+		return (u32)x;
+	}
+
 public:
-	float _lag_avg; // ms
-	float _lag_var; // ms
+	// void OnPacket(Packet *p);
+	typedef Delegate1<void, Packet *> PacketDelegate;
+
+	void Initialize(u32 seed, float drop_percentage, float lag_avg, float lag_two_sig, float lag_min, PacketDelegate delegate) {
+		_rng.Initialize(seed);
+
+		_drop_rate = drop_percentage / 100.f;
+
+		_lag_avg = lag_avg;
+		_lag_sig = lag_two_sig / 2.f;
+		_lag_min = lag_min;
+
+		_ms = 0;
+		_delegate = delegate;
+		_head = _tail = 0;
+	}
+
+	// Advance the simulation ahead to the given number of ms and dequeue any events that occurred
+	void AdvanceSimulation(u32 ms) {
+		_ms = ms;
+
+		// Peel off expired messages
+		Packet *next = _head;
+		for (Packet *p = next; p && p->trigger >= ms; p = next) {
+			next = p->next;
+			_delegate(p);
+		}
+		_head = next;
+		if (!next) {
+			_tail = 0;
+		}
+	}
+
+	// Free a packet
+	void FreePacket(Packet *p) {
+		// TODO: Optimize with a custom memory allocator
+		delete p;
+	}
+
+	// Get a new packet buffer with a prescribed delivery time
+	// Or returns null when a packet got dropped
+	Packet *NextPacket() {
+		// If a packet got dropped,
+		if (DropPacket()) {
+			// Return null
+			return 0;
+		}
+
+		// TODO: Optimize with a custom memory allocator
+		Packet *np = new Packet;
+
+		u32 trigger = _ms + NextDelay();
+		np->trigger = trigger;
+
+		// If should be added after tail,
+		Packet *prev = 0;
+		if (_tail && trigger < _tail->trigger) {
+			for (Packet *p = _head; p; prev = p, p = p->next) {
+				if (trigger < p->trigger) {
+					if (prev) {
+						prev->next = np;
+					} else {
+						_head = np;
+					}
+					np->next = p;
+					return np;
+				}
+			}
+		} else {
+			prev = _tail;
+		}
+
+		if (prev) {
+			prev->next = np;
+		} else {
+			_head = np;
+		}
+		np->next = 0;
+		_tail = np;
+		return np;
+	}
 };
 
 
@@ -43,6 +161,13 @@ int main()
 	MersenneTwister::InitializeNor();
 	MersenneTwister::InitializeExp();
 	m_clock.OnInitialize();
+
+	Channel ch;
+	ch.Initialize(0, 2, 210, 50, 200);
+
+	for (;;) {
+		cout << ch.NextDelay() << endl;
+	}
 
 	//FindBadDenseSeeds();
 
@@ -166,3 +291,4 @@ int main()
 
 	return 0;
 }
+
