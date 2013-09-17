@@ -66,7 +66,7 @@
 #ifndef CAT_DELEGATES_HPP
 #define CAT_DELEGATES_HPP
 
-#include "../decoder/Platform.hpp"
+#include "Platform.hpp"
 
 namespace cat {
 

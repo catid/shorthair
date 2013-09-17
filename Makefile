@@ -13,7 +13,7 @@ CPFLAGS = $(CFLAGS)
 
 
 # Object files
-shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o
+shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
 tester_o = Tester.o $(wirehair_o) $(calico_o) $(shared_o)
@@ -56,6 +56,9 @@ EndianNeutral.o : shared/EndianNeutral.cpp
 
 Clock.o : shared/Clock.cpp
 	$(CCPP) $(CPFLAGS) -c shared/Clock.cpp
+
+Enforcer.o : shared/Enforcer.cpp
+	$(CCPP) $(CPFLAGS) -c shared/Enforcer.cpp
 
 
 # Wirehair objects

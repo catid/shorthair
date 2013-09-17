@@ -1,8 +1,12 @@
 #include "wirehair/Wirehair.hpp"
+#include "calico/Calico.hpp"
 #include "Clock.hpp"
-#include "MersenneTwister.hpp"
+#include "Delegates.hpp"
+#include "Enforcer.hpp"
+#include "EndianNeutral.hpp"
 using namespace cat;
 
+#include <vector>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -12,141 +16,536 @@ using namespace std;
 static Clock m_clock;
 
 
-static int UDP_PAYLOAD = 1441;
+/*
+ * A graphical representation of streaming in general (disregarding FEC):
+ *
+ * | <---------------------------- buffer size ----> | <- processed ---->
+ * | <- in  transit -> |                             |
+ * | 11 | 10 | 09 | 08 | 07 | 06 | 05 | 04 | 03 | 02 | 01 | 00 |
+ * ^                   ^
+ * t=0                 t=max one-way latency expected
+ *
+ * The perceived latency at the receiver is the buffer size, and each of the
+ * numbered bins may contain several packets transmitted together.
+ *
+ * Some example numbers:
+ *
+ * Stream data packet(s) every 10 ms
+ * t = ~100 ms
+ * buffer size = 250 ms
+ *
+ *
+ * ==> Why use FEC?
+ *
+ * With RTT acknowledgement protocol like TCP this latency cannot be reached.
+ * Furthermore head-of-line blocking in TCP can cause huge lag spikes in data.
+ *
+ * Using a custom "reliable" UDP implementation can avoid some of these problems
+ * at the cost of high code complexity.  But latency is still bounded by RTT:
+ * At best you could get 300 ms, but packetloss is *twice* as likely to kill
+ * the NACK or the data now!
+ *
+ * But with FEC we can avoid TCP overhead and simply drop data when the link
+ * fails beyond an expected rate rather than block subsequent data.
+ *
+ * Assume there is extra room in the channel for error correction symbols:
+ * We could just send as many symbols as the link will allow, which would give
+ * the best error correction performance.  In practice we would want to send
+ * an amount that is reasonable.
+ *
+ * Using Reed-Solomon codes can achieve high-performance at FIXED code rates.
+ * Furthermore they need to be designed with a FIXED number of packets ahead of
+ * time, which means that in practice people have been writing *many* RS codes
+ * and selecting between them for a single application.  And it all needs to be
+ * rewritten when requirements change.
+ *
+ * Wirehair/RaptorQ improves on this, allowing us to use only as much bandwidth
+ * as needed, covering any number of packets required, while requiring an
+ * acceptable amount of performance loss compared to RS-codes, and offering
+ * optimal use of the channel and lower latency compared to ARQ-based approaches.
+ *
+ *
+ * ==> Using UDP means we have to implement flow control right??
+ *
+ * Thankfully the data is constant-rate so there is no need for a
+ * heavy-weight flow control algorithm.  We can just send data on a timer.
+ * It doesn't need to be the same number of packets each time.
+ *
+ *
+ * ==> What are the design decisions for error correction codes?
+ *
+ * (1) Code Groups : Which packets are covered by which code?
+ * (2) Coding Rate : How many symbols to add for each code group?
+ *
+ *
+ * ==> (2) How many additional symbols should we send?
+ *
+ * If a packet gets lost, sending one additional symbol can fill in for it with
+ * high likelihood.  But it also has a small chance of being lost of course,
+ * and packetloss tends to be bursty, so it is better to spread error correction
+ * symbols over a longer amount of time.
+ *
+ * If channel packet drop decision can be modeled as an IID uniform random
+ * variable, then the loss rate after FEC is applied can be evaluated using
+ * equation (3) from:
+ * http://www.eurecom.fr/en/publication/489/download/cm-nikane-000618.pdf
+ *
+ * The targetted loss rate may not be achieveable within the given channel,
+ * but Wirehair/RaptorQ schemes allow you to finely tune the code "rate" to
+ * match exactly what is needed as noted in the above paper.
+ *
+ * It seems like the best rate should be selected by evaluating equation (3)
+ * with several exponents until the estimated loss rate matches the targetted
+ * loss rate.  Faster approaches are feasible though unnecessary for evaulation.
+ *
+ *
+ * ==> (1) How should we interleave/overlap/etc the codes?
+ *
+ * Wirehair's encoder uses a roughly linear amount of memory and time based on
+ * the size of the input, so running multiple encoders is efficient.
+ *
+ * Since the data is potentially being read from a receiver in real-time, the
+ * original data is sent first, followed by the error correction symbols.
+ * This means that the original data has a tail of extra symbols that follow it.
+ * These extra error correction symbols are sent along with new data for the
+ * next code group, overlapping:
+ *
+ * | <---------------------------- buffer size ----> |
+ * | <- in  transit -> |                             |
+ * | 11 | 10 | 09 | 08 | 07 | 06 | 05 | 04 | 03 | 02 | 01 | 00 |
+ *                  ..   aa   aa   aa   aa   AA   AA   ..
+ *        ..   bb   bb   bb   bb   BB   BB   ..
+ *   cc   cc   cc   cc   CC   CC   ..
+ *
+ * Lower-case letters indicate check symbols, and upper-case letters indicate
+ * original packets.
+ *
+ * The encoder keeps (buffer size in bins) / (code group size in bins) = P
+ * encoders running in parallel.  Higher P is less efficient, because check
+ * symbols sent are about (P-1)x less likely to be part of the code group.
+ *
+ * So we choose P = 2 and overlap just two encoders!
+ *
+ *
+ * The next question is how large the code groups should be.  If they are bigger
+ * than the after-transit buffer then problems occur as shown below:
+ *
+ * | <---------------------------- buffer size ----> |
+ * | <- in  transit -> |                             |
+ * | 11 | 10 | 09 | 08 | 07 | 06 | 05 | 04 | 03 | 02 | 01 | 00 |
+ *             !!   !!   aa   aa   AA   AA   AA   AA   ..
+ *   bb   bb   BB   BB   BB   BB   !!   !!
+ *
+ * As you can see there are periods (marked with !!) where no check symbols can
+ * be sent, or they would be too late.  This is both wasted bandwidth and
+ * reducing the windows in which check symbols can be delivered to help.  This
+ * is a very bad case to be in.
+ *
+ *
+ * Another non-ideal case is where the code groups are too short:
+ *
+ * | <---------------------------- buffer size ----> |
+ * | <- in  transit -> |                             |
+ * | 11 | 10 | 09 | 08 | 07 | 06 | 05 | 04 | 03 | 02 | 01 | 00 |
+ *   DD   DD   cc   cc   CC   CC   aa   aa   AA   AA   gg   gg
+ *   ee   ee   EE   EE   bb   bb   BB   BB   ff   ff   FF   FF
+ *
+ * Now it's clear that bandwidth is not being wasted.  However, if a burst loss
+ * occurs, it is more likely to wipe out more symbols than can be recovered by
+ * the chosen code rate.  For particularly long bursts, the only protection is
+ * to make the code groups longer.
+ *
+ * So it's best to err on the side of code groups that are too short rather
+ * than too long, between these two options.
+ *
+ *
+ * When it is perfectly matched:
+ *
+ * | <---------------------------- buffer size ----> |
+ * | <- in  transit -> |                             |
+ * | 11 | 10 | 09 | 08 | 07 | 06 | 05 | 04 | 03 | 02 | 01 | 00 |
+ *   cc   CC   CC   CC   aa   aa   aa   AA   AA   AA   ..
+ *   ..   bb   bb   bb   BB   BB   BB   dd   dd   dd   DD   DD
+ *
+ * Knowing the transit time for data is essential in estimating how large the
+ * code group size should be.  This allows the encoder to avoid sending data
+ * that will be useless at the decoder.  This also allows the encoder to make
+ * the most of the buffer to prevent bursty losses from affecting the recovery,
+ * assuming that the buffer size has been selected to be much larger than burst
+ * loss periods.
+ *
+ * And again, we want to err on the side of short code groups.
+ *
+ * let RTT_high be a high estimate of the round-trip time.
+ * estimate the one-way transit time by RTT_high/2, and so:
+ *
+ * (code group length) = ((buffer size) - (RTT_high/2)) / 2.1
+ *
+ * The 2.1 factor and RTT calculation can be modified for realistic scenarios.
+ *
+ * This gives us the number of packets to include in each group, and the data
+ * encoder just alternates between two Wirehair instances, feeding one and
+ * generating check symbols from the other.
+ * 
+ *
+ * ==> Aside from FEC what else do we need?
+ *
+ * FEC assumes we have a way to tell if a packet arrived corrupted or not.
+ * So we need to add a good checksum.
+ *
+ * Furthermore, each packet needs to be tagged with a unique ID number so that
+ * we can tell which code group it is from, for a start.
+ *
+ * Happily, it turns out that an authenticated encryption scheme with a stream-
+ * cipher and MAC provides security, integrity, and a useful ID number.
+ * This means that almost for free we also get secure data transmission.
+ *
+ * SSL runs over TCP which makes it impractical for data transmission in our
+ * case, but it may be useful for a key exchange handshake.
+ *
+ *
+ * ==> Putting it all together
+ *
+ * Round-trip time must be measured to calculate the rate at which the sender
+ * swaps encoders.  Packetloss must be measured to calculate the number of
+ * extra check symbols to send.
+ *
+ * So, periodically the sender should send a flag in a data packet that
+ * indicates a "ping."  The receiver should respond as fast as possible to the
+ * ping with a "pong" that includes packet loss information.  It helps to set
+ * the "ping" flag at the front of a set of data to avoid queuing delays
+ * affecting the measured transit time.
+ * 
+ * The data is encrypted, so each packet has a unique identifier.  The receiver
+ * notes gaps in the packet id sequence that last longer than the buffer size
+ * as losses.  The collected loss statistics will be sent in "pong" messages.
+ *
+ * The sender is only sending recovery symbols for one code group at a time, so
+ * only one encoder is needed.
+ *
+ * The receiver can opportunistically apply the decoder when packets get lost.
+ * And it only applies the decoder to the most recent code group, so only one
+ * decoder instance is needed.
+ */
 
-struct Packet {
-	u32 trigger;
 
-	u8 buffer[UDP_PAYLOAD];
+static const int SKEY_BYTES = 32;
 
-	Packet *next;
+
+class LossEstimator {
+	static const int BINS = 32;
+	struct {
+		u32 seen, count;
+	} _bins[BINS];
+	int _count, _index;
+
+	// Final massaged value:
+	float _loss;
+
+public:
+	void Initialize() {
+		_index = 0;
+		_count = 0;
+		_loss = 0.2; // Default loss = 20%
+	}
+
+	void Insert(u32 seen, u32 count) {
+		// Insert data
+		_bins[_index].seen = seen;
+		_bins[_index].count = count;
+
+		// Wrap around
+		if (++_index >= BINS) {
+			_index = 0;
+		}
+
+		// If not full yet,
+		if (_count < BINS) {
+			_count++;
+		}
+	}
+
+	void Calculate() {
+		// TODO: Pick estimated loss based on history
+	}
+
+	float Get() {
+		return _loss;
+	}
+};
+
+
+class DelayEstimator {
+	static const int BINS = 32;
+	struct {
+		int delay;
+	} _bins[BINS];
+	int _count, _index;
+
+	// Final massaged value:
+	int _delay;
+
+public:
+	void Initialize(int buffer_time) {
+		_index = 0;
+		_count = 0;
+		_delay = buffer_time / 2; // Default delay = half buffer size
+	}
+
+	void Insert(int delay) {
+		// Insert data
+		_bins[_index].delay = delay;
+
+		// Wrap around
+		if (++_index >= BINS) {
+			_index = 0;
+		}
+
+		// If not full yet,
+		if (_count < BINS) {
+			_count++;
+		}
+	}
+
+	void Calculate() {
+		// TODO: Pick estimated upper-bound on one-way s2c delay based on history
+	}
+
+	int Get() {
+		return _delay;
+	}
 };
 
 
 
-// Event-driven one-way channel simulator
-// Attempt at realistic latency
-// Uniformly distributed packetloss
+class IDataSource {
+public:
+	// Returns number of bytes actually read or 0 for end of data
+	virtual int ReadData(void *buffer, int max_bytes) = 0;
+	virtual void SendData(void *buffer, int bytes) = 0;
+};
 
-class Channel {
-	MersenneTwister _rng;		// RNG
 
-	float _drop_rate;			// Ploss [0..1]
 
-	float _lag_min;				// ms
-	float _lag_avg; 			// ms
-	float _lag_sig;	 			// sigma = sqrt(variance), 2sigma = 95% confidence interval
 
-	u32 _ms;					// Simulation time (ms)
-	PacketDelegate _delegate;
+struct SourceSettings {
+	int buffer_time;			// Milliseconds of buffering
+	int chunk_size;				// Bytes per data chunk
+	IDataSource *source;		// Data source
+};
 
-	Packet *_head, *_tail;
 
-	bool DropPacket() {
-		return _rng.Uni() < _drop_rate;
+
+
+class BrookSource {
+	static const int MAX_CHUNK_SIZE = 1400;
+	static const int PROTOCOL_OVERHEAD = 1 + 4;
+	static const int MAX_PROTOCOL_OVERHEAD = 1 + 4 + calico::Calico::OVERHEAD;
+	static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
+
+	SourceSettings _settings;
+
+	calico::Calico _cipher;
+
+	wirehair::Encoder _encoder;
+
+	DelayEstimator _delay;
+	LossEstimator _loss;
+
+	// Calculated symbol rate from loss
+	u32 _check_symbols_max;
+	float _check_symbols_per_ms;
+
+	// Last time we had a tick
+	u32 _last_tick;
+	bool _has_symbols;
+	u32 _input_symbol;
+	u32 _check_symbol;
+	u8 _code_group;
+
+	// Buffer of original data being sent for next swap
+	vector<u8> _buffer;
+
+	// Calculated interval from delay
+	u32 _swap_interval;
+
+	// Next time to trigger a swap
+	u32 _swap_trigger;
+
+	// Setup encoder on buffered data
+	void Swap() {
+		if (_buffer.size() <= 0) {
+			_has_symbols = false;
+		} else {
+			_has_symbols = true;
+
+			// NOTE: After this function call, the input data can be safely modified so long
+			// as Encode() requests come after the original data block count.
+			CAT_ENFORCE(!_encoder.BeginEncode(&_buffer[0], _buffer.size(), _settings.chunk_size));
+
+			// Start symbols right after original data
+			_check_symbol = _encoder.BlockCount();
+
+			CAT_ENFORCE(_check_symbol == _input_symbol);
+		}
+
+		// File under next code group either way
+		++_code_group;
 	}
 
-	u32 NextDelay() { // ms
-		// Based on http://www.ieee-infocom.org/2004/papers/37_4.pdf
-		float x = _rng.Nor() * _lag_sig + _lag_avg;
-		if (x < _lag_min) {
-			x = _lag_min;
-		}
-		return (u32)x;
+	// Send a check symbol
+	void SendCheckSymbol() {
+		u8 buffer[MAX_PKT_SIZE];
+
+		// Prepend the code group
+		buffer[0] = _code_group;
+
+		// Add check symbol number
+		*(u32*)(buffer + 1) = getLE(_check_symbol);
+
+		CAT_ENFORCE(_check_symbol >= _encoder.BlockCount());
+
+		// FEC encode
+		u32 bytes = _encoder.Encode(_check_symbol, buffer + PROTOCOL_OVERHEAD);
+
+		// Encrypt
+		bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
+
+		// Transmit
+		_settings.source->SendData(buffer, bytes);
+
+		// Next check symbol
+		++_check_symbol;
+	}
+
+	// Calculate interval from delay
+	void CalculateInterval() {
+		int delay = _delay.Get();
+
+		// TODO: Calculate _swap_interval
+	}
+
+	// Calculate symbol rate from loss
+	void CalculateRate() {
+		float loss = _loss.Get();
+
+		// TODO: Calculate _check_symbols_max and _check_symbols_per_ms
 	}
 
 public:
-	// void OnPacket(Packet *p);
-	typedef Delegate1<void, Packet *> PacketDelegate;
-
-	void Initialize(u32 seed, float drop_percentage, float lag_avg, float lag_two_sig, float lag_min, PacketDelegate delegate) {
-		_rng.Initialize(seed);
-
-		_drop_rate = drop_percentage / 100.f;
-
-		_lag_avg = lag_avg;
-		_lag_sig = lag_two_sig / 2.f;
-		_lag_min = lag_min;
-
-		_ms = 0;
-		_delegate = delegate;
-		_head = _tail = 0;
-	}
-
-	// Advance the simulation ahead to the given number of ms and dequeue any events that occurred
-	void AdvanceSimulation(u32 ms) {
-		_ms = ms;
-
-		// Peel off expired messages
-		Packet *next = _head;
-		for (Packet *p = next; p && p->trigger >= ms; p = next) {
-			next = p->next;
-			_delegate(p);
-		}
-		_head = next;
-		if (!next) {
-			_tail = 0;
-		}
-	}
-
-	// Free a packet
-	void FreePacket(Packet *p) {
-		// TODO: Optimize with a custom memory allocator
-		delete p;
-	}
-
-	// Get a new packet buffer with a prescribed delivery time
-	// Or returns null when a packet got dropped
-	Packet *NextPacket() {
-		// If a packet got dropped,
-		if (DropPacket()) {
-			// Return null
-			return 0;
+	// On startup:
+	bool Initialize(const u8 key[SKEY_BYTES], const SourceSettings &settings) {
+		if (_cipher.Initialize(key, "BROOK", calico::RESPONDER)) {
+			return false;
 		}
 
-		// TODO: Optimize with a custom memory allocator
-		Packet *np = new Packet;
+		_settings = settings;
 
-		u32 trigger = _ms + NextDelay();
-		np->trigger = trigger;
+		_delay.Initialize(_settings.buffer_time);
+		_loss.Initialize();
 
-		// If should be added after tail,
-		Packet *prev = 0;
-		if (_tail && trigger < _tail->trigger) {
-			for (Packet *p = _head; p; prev = p, p = p->next) {
-				if (trigger < p->trigger) {
-					if (prev) {
-						prev->next = np;
-					} else {
-						_head = np;
-					}
-					np->next = p;
-					return np;
-				}
+		_has_symbols = false;
+		_last_tick = 0;
+		_code_group = 0;
+		_input_symbol = 0;
+		_check_symbol = 0;
+
+		CalculateInterval();
+		CalculateRate();
+
+		CAT_ENFORCE(_settings.chunk_size <= MAX_CHUNK_SIZE);
+	}
+
+	// From pong message, round-trip time
+	void UpdateRTT(int ms) {
+		CAT_ENFORCE(ms >= 0);
+
+		// Approximate delay with RTT / 2.
+		// TODO: Adjust to match the asymmetry of your channel,
+		// or use exact time measurements when available instead.
+		int delay = ms / 2;
+
+		_delay.Insert(delay);
+		_delay.Calculate();
+
+		CalculateInterval();
+	}
+
+	// From pong message, number of packets seen out of count in interval
+	void UpdateLoss(u32 seen, u32 count) {
+		CAT_ENFORCE(seen <= count);
+
+		_loss.Insert(seen, count);
+		_loss.Calculate();
+
+		CalculateRate();
+	}
+
+	// Called once per tick, send all pending data and check symbols, providing
+	// a timestamp in milliseconds
+	void Send(u32 ms) {
+		// If it is time to swap the buffer,
+		if ((s32)(ms - _swap_trigger) > 0) {
+			_swap_trigger = ms + _swap_interval;
+
+			Swap();
+		}
+
+		// Calculate tick interval
+		u32 tick_interval = ms - _last_tick;
+
+		// Read data in chunks
+		u8 buffer[MAX_PKT_SIZE];
+		u8 *data = buffer + PROTOCOL_OVERHEAD;
+		int bytes;
+		while ((bytes = _settings.source->ReadData(data, _settings.chunk_size))) {
+			// NOTE: For now, require that the data returned is exactly the size requested.
+			// This has some obvious failure modes (very small data), but avoids a lot of
+			// complications.
+			CAT_ENFORCE(bytes == _settings.chunk_size);
+
+			// Append to buffer
+			_buffer.insert(_buffer.end(), data, data + bytes);
+
+			// Add next code group (this is part of the code group after the next swap)
+			buffer[0] = _code_group + 1;
+
+			// Add check symbol number
+			*(u32*)(buffer + 1) = getLE(_input_symbol);
+
+			// Encrypt
+			bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
+
+			// Transmit
+			_settings.source->SendData(buffer, bytes);
+
+			++_input_symbol;
+		}
+
+		if (_has_symbols) {
+			// Calculate number of check symbols to send based on rate
+			u32 check_symbols = _check_symbols_per_ms * tick_interval;
+			if (check_symbols > _check_symbols_max) {
+				check_symbols = _check_symbols_max;
 			}
-		} else {
-			prev = _tail;
+
+			for (int ii = 0; ii < check_symbols; ++ii) {
+				SendCheckSymbol();
+			}
 		}
 
-		if (prev) {
-			prev->next = np;
-		} else {
-			_head = np;
-		}
-		np->next = 0;
-		_tail = np;
-		return np;
+		_last_tick = ms;
 	}
 };
 
 
-
-
-
-
-
-
-
+class BrookSink {
+public:
+	// TODO: Implement ping/pong: Trigger whenever we see a new code group
+	// TODO: Implement decoder time-based buffering
+	// TODO: Implement IV-based packet-loss estimator
+	// TODO: Handle code group wrap
+};
 
 
 
@@ -158,137 +557,12 @@ public:
 
 int main()
 {
-	MersenneTwister::InitializeNor();
-	MersenneTwister::InitializeExp();
 	m_clock.OnInitialize();
-
-	Channel ch;
-	ch.Initialize(0, 2, 210, 50, 200);
-
-	for (;;) {
-		cout << ch.NextDelay() << endl;
-	}
-
-	//FindBadDenseSeeds();
-
-	for (int ii = 43; ii <= 64000; ii += 1000)
-	{
-		int block_count = ii;
-		int block_bytes = 1300;
-		int message_bytes = block_bytes * block_count;
-		u8 *message = new u8[message_bytes];
-		u8 *message_out = new u8[message_bytes];
-		u8 *block = new u8[block_bytes];
-
-		for (int ii = 0; ii < message_bytes; ++ii)
-		{
-			message[ii] = ii;
-		}
-
-		wirehair::Encoder encoder;
-
-		double start = m_clock.usec();
-		wirehair::Result r = encoder.BeginEncode(message, message_bytes, block_bytes);
-		double end = m_clock.usec();
-
-		if (r)
-		{
-			cout << "-- FAIL! N=" << encoder.BlockCount() << " encoder.BeginEncode error " << wirehair::GetResultString(r) << endl;
-			cin.get();
-			continue;
-		}
-		else
-		{
-			double mbytes = message_bytes / 1000000.;
-
-			cout << ">> OKAY! N=" << encoder.BlockCount() << "(" << mbytes << " MB) encoder.BeginEncode in " << end - start << " usec, " << message_bytes / (end - start) << " MB/s" << endl;
-			//cin.get();
-		}
-
-		Abyssinian prng;
-		cat::wirehair::Decoder decoder;
-
-		u32 overhead_sum = 0, overhead_trials = 0;
-		u32 drop_seed = 50002;
-		double time_sum = 0;
-		const int trials = 1000;
-		for (int jj = 0; jj < trials; ++jj)
-		{
-			int blocks_needed = 0;
-
-			wirehair::Result s = decoder.BeginDecode(message_out, message_bytes, block_bytes);
-			if (s)
-			{
-				cout << "-- FAIL! N=" << decoder.BlockCount() << " decoder.BeginDecode error " << wirehair::GetResultString(s) << endl;
-				cin.get();
-				return 1;
-			}
-
-			prng.Initialize(drop_seed);
-			for (u32 id = 0;; ++id)
-			{
-				if (prng.Next() & 1) continue;
-				encoder.Encode(id, block);
-
-				++blocks_needed;
-				double start = m_clock.usec();
-				wirehair::Result r = decoder.Decode(id, block);
-				double end = m_clock.usec();
-
-				if (r != wirehair::R_MORE_BLOCKS)
-				{
-					if (r == wirehair::R_WIN)
-					{
-						u32 overhead = blocks_needed - decoder.BlockCount();
-						overhead_sum += overhead;
-						++overhead_trials;
-
-						//cout << ">> OKAY! N=" << decoder.BlockCount() << " decoder.Decode in " << end - start << " usec, " << message_bytes / (end - start) << " MB/s after " << overhead << " extra blocks.  Average extra = " << overhead_sum / (double)overhead_trials << ". Seed = " << drop_seed << endl;
-						time_sum += end - start;
-
-						if (!memcmp(message, message_out, message_bytes))
-						{
-							//cout << "Match!" << endl;
-						}
-						else
-						{
-							cout << "FAAAAAIL! Seed = " << drop_seed << endl;
-
-							for (int ii = 0; ii < message_bytes; ++ii)
-							{
-								if (message_out[ii] != message[ii])
-									cout << ii << " : " << (int)message_out[ii] << endl;
-							}
-
-							cin.get();
-						}
-					}
-					else
-					{
-						cout << "-- FAIL!  N=" << decoder.BlockCount() << " decoder.Decode error " << wirehair::GetResultString(r) << " from drop seed " << drop_seed << endl;
-
-						overhead_sum += 1;
-						++overhead_trials;
-
-						//cin.get();
-					}
-
-					//cin.get();
-					break;
-				}
-			}
-
-			++drop_seed;
-		}
-
-		double avg_time = time_sum / trials;
-		double avg_overhead = overhead_sum / (double)overhead_trials;
-		double avg_bytes = message_bytes * (decoder.BlockCount() + avg_overhead) / (double)decoder.BlockCount() - message_bytes;
-		cout << "N=" << decoder.BlockCount() << " decoder.Decode in " << avg_time << " usec, " << message_bytes / avg_time << " MB/s.  Average overhead = " << avg_overhead << " (" << avg_bytes << " bytes)" << endl;
-	}
 
 	m_clock.OnFinalize();
 
 	return 0;
 }
+
+
 

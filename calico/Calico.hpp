@@ -111,6 +111,12 @@ public:
 				   const char *session_name,	// Unique session name
 				   int mode);					// Value from CalicoModes
 
+	// Get next outgoing IV
+	// Starting at 0 and incrementing by 1 each time
+	CAT_INLINE u64 MyNextIV() {
+		return _window.PeekNormalizedLocal();
+	}
+
 	/*
 	 * len = Encrypt(plaintext, plaintext_bytes, ciphertext, ciphertext_bytes)
 	 *
@@ -143,7 +149,7 @@ public:
 				int ciphertext_bytes);	// Output buffer size
 
 	/*
-	 * len = Decrypt(ciphertext, ciphertext_bytes)
+	 * len = Decrypt(ciphertext, ciphertext_bytes, message_iv)
 	 *
 	 * Decrypts the given ciphertext in-place, returning the plaintext size.
 	 *
@@ -162,7 +168,8 @@ public:
 	 * ERR_MAC_DROP = Message authentication check failed
 	 */
 	int Decrypt(void *ciphertext,		// Pointer to ciphertext
-				int ciphertext_bytes);	// Number of valid encrypted data bytes
+				int ciphertext_bytes,	// Number of valid encrypted data bytes
+				u64 &message_iv);		// Unique incrementing number for message
 };
 
 

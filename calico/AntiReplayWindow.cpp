@@ -56,7 +56,7 @@ bool AntiReplayWindow::Validate(u64 iv)
 	return true;
 }
 
-void AntiReplayWindow::Accept(u64 iv)
+u64 AntiReplayWindow::Accept(u64 iv)
 {
 	// Check how far in the past/future this IV is
 	int delta = (int)(iv - _remote);
@@ -112,4 +112,7 @@ void AntiReplayWindow::Accept(u64 iv)
 		// Set the bit in the bitmap for this IV
 		_bitmap[delta >> 6] |= (u64)1 << (delta & 63);
 	}
+
+	return iv - _init_remote;
 }
+

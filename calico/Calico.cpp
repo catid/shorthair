@@ -122,7 +122,8 @@ int Calico::Encrypt(const void *plaintext,	// Pointer to input plaintext
 }
 
 int Calico::Decrypt(void *ciphertext,		// Pointer to ciphertext
-					int ciphertext_bytes)	// Number of valid encrypted data bytes
+					int ciphertext_bytes,	// Number of valid encrypted data bytes
+					u64 &message_iv)		// Unique incrementing number for message
 {
 	if (!_initialized)
 		return ERR_BAD_STATE;
@@ -158,7 +159,7 @@ int Calico::Decrypt(void *ciphertext,		// Pointer to ciphertext
 		return ERR_MAC_DROP;
 
 	// Accept this IV
-	_window.Accept(iv);
+	message_iv = _window.Accept(iv);
 
 	return plaintext_bytes;
 }
