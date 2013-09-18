@@ -247,14 +247,18 @@ class LossEstimator {
 	} _bins[BINS];
 	int _count, _index;
 
+	// Minimum allowed loss estimate
+	float _min_loss;
+
 	// Final massaged value:
 	float _loss;
 
 public:
-	void Initialize() {
+	void Initialize(float min_loss) {
 		_index = 0;
 		_count = 0;
-		_loss = 0.2; // Default loss = 20%
+		_min_loss = min_loss;
+		_loss = min_loss;
 	}
 
 	void Insert(u32 seen, u32 count) {
@@ -273,8 +277,24 @@ public:
 		}
 	}
 
+	// Pick estimated loss based on history
 	void Calculate() {
-		// TODO: Pick estimated loss based on history
+		const int len = _count;
+		u64 seen = 0, count = 0;
+
+		for (int ii = 0; ii < len; ++ii) {
+			seen += _bins[ii].seen;
+			count += _bins[ii].count;
+		}
+
+		_loss = (float)((count - seen) / (double)count);
+
+		// Clamp value
+		if (_loss < _min_loss) {
+			_loss = _min_loss;
+		}
+
+		// TODO: Validate that this is a good predictor
 	}
 
 	float Get() {
@@ -290,14 +310,19 @@ class DelayEstimator {
 	} _bins[BINS];
 	int _count, _index;
 
+	// Clamp values
+	int _min_delay, _max_delay;
+
 	// Final massaged value:
 	int _delay;
 
 public:
-	void Initialize(int buffer_time) {
+	void Initialize(int min_delay, int max_delay) {
 		_index = 0;
 		_count = 0;
-		_delay = buffer_time / 2; // Default delay = half buffer size
+		_min_delay = min_delay;
+		_max_delay = max_delay;
+		_delay = min_delay;
 	}
 
 	void Insert(int delay) {
@@ -315,8 +340,26 @@ public:
 		}
 	}
 
+	// Pick estimated upper-bound on one-way s2c delay based on history
 	void Calculate() {
-		// TODO: Pick estimated upper-bound on one-way s2c delay based on history
+		u64 sum = 0;
+		const int len = _count;
+
+		for (int ii = 0; ii < len; ++ii) {
+			int delay = _bins[ii].delay;
+
+			sum += delay;
+		}
+
+		_delay = (int)(sum / len);
+
+		if (_delay < _min_delay) {
+			_delay = _min_delay;
+		} else if (_delay > _max_delay) {
+			_delay = _max_delay;
+		}
+
+		// TODO: Validate that this is a good predictor
 	}
 
 	int Get() {
@@ -342,6 +385,8 @@ public:
 
 
 struct SourceSettings {
+	float min_loss;				// [0..1] packetloss probability lower limit
+	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
 	int buffer_time;			// Milliseconds of buffering
 	int chunk_size;				// Bytes per data chunk
 	IDataSource *source;		// Data source
@@ -484,8 +529,8 @@ public:
 
 		_settings = settings;
 
-		_delay.Initialize(_settings.buffer_time);
-		_loss.Initialize();
+		_delay.Initialize(_settings.min_delay, _settings.max_delay);
+		_loss.Initialize(_settings.min_loss);
 
 		_has_symbols = false;
 		_last_tick = 0;
