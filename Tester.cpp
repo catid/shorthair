@@ -4,6 +4,8 @@
 #include "Delegates.hpp"
 #include "Enforcer.hpp"
 #include "EndianNeutral.hpp"
+#include "ReuseAllocator.hpp"
+#include "BitMath.hpp"
 using namespace cat;
 
 #include <vector>
@@ -231,9 +233,70 @@ static Clock m_clock;
  */
 
 
+
+/*
+ * Brook Protocol
+ *
+ * This protocol implements a single FEC/UDP stream.  Another control channel
+ * must be used for secret key agreement and connection/disconnection events.
+ *
+ *
+ * Usage:
+ *
+ * The data source implements IDataSource and fills in the SourceSettings
+ * structure with parameters to control the data flow.  Call ::Tick() periodically
+ * at the rate you want to transmit data.  10 ms or faster is a good idea.
+ * And call ::Recv() when a UDP packet arrives.  The data source object will
+ * call your IDataSource methods when it needs to read data from the input or
+ * needs to send a UDP packet to the remote sink.
+ *
+ * The data sink implements IDataSink and fills in the SinkSettings
+ * structure with parameters to control the data flow.  Call ::Recv() when UDP
+ * packets arrive.  The data sink object will call your IDataSink methods when
+ * it needs to send a UDP packet to the remote source or when it has received
+ * the next packet in the data stream.
+ *
+ *
+ * Source -> Sink data packet format:
+ *
+ * <group[1 byte]> (brook-wirehair)
+ * <block count[2 bytes]> (brook-wirehair)
+ * <block id[2 bytes]> (brook-wirehair)
+ * {...block data...}
+ * <MAC[8 bytes]> (calico)
+ * <IV[3 bytes]> (calico)
+ *
+ * MAC+IV are used for Calico encryption (11 bytes overhead).
+ * Group: Which code group the data is associated with.
+ * N = Block count: Total number of original data packets in this code group.
+ * I = Block id: Identifier for this packet.
+ *
+ * In this scheme,
+ * 		I < N are original, and
+ * 		I >= N are Wirehair recovery packets.
+ *
+ * The Block ID uses a wrapping counter that reduces an incrementing 32-bit
+ * counter to a 16-bit counter assuming that packet re-ordering does not exceed
+ * 32768 consecutive packets.  (IV works similarly to recover a 64-bit ID)
+ *
+ * Total overhead = 16 bytes per packet.
+ *
+ *
+ * Sink -> Source pong packet format:
+ *
+ * <group[1 byte]>
+ * <seen count[4 bytes]>
+ * <total count[4 bytes]>
+ *
+ * This message is sent in reaction to a new code group on the receipt of the
+ * first original data packet to update the source's redundancy in reaction to
+ * measured packet loss as seen at the sink and to measure the round-trip time
+ * for deciding how often to switch codes.
+ */
+
 static const int SKEY_BYTES = 32;
 static const int MAX_CHUNK_SIZE = 1400;
-static const int PROTOCOL_OVERHEAD = 1 + 4 + 2;
+static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
 static const int MAX_PROTOCOL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
 static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
 static const int PONG_SIZE = 1 + 4 + 4;
@@ -376,9 +439,6 @@ public:
 
 	// Data to send to remote host
 	virtual void SendData(void *buffer, int bytes) = 0;
-
-	// Called when disconnected for some reason (timeout, etc)
-	virtual void Disconnected(int reason) = 0;
 };
 
 
@@ -460,11 +520,11 @@ class BrookSource {
 		// Prepend the code group
 		buffer[0] = _code_group;
 
-		// Add check symbol number
-		*(u32*)(buffer + 1) = getLE(_check_symbol);
+		// Add low bits of check symbol number
+		*(u16*)(buffer + 1) = getLE((u16)_check_symbol);
 
 		// Add block count
-		*(u16*)(buffer + 1 + 4) = getLE(block_count);
+		*(u16*)(buffer + 1 + 2) = getLE(block_count);
 
 		// FEC encode
 		u32 bytes = _encoder.Encode(_check_symbol, buffer + PROTOCOL_OVERHEAD);
@@ -582,10 +642,10 @@ public:
 			}
 
 			// Add check symbol number
-			*(u32*)(buffer + 1) = getLE(_input_symbol);
+			*(u16*)(buffer + 1) = getLE((u16)_input_symbol);
 
 			// Set block count to zero for input symbols
-			*(u16*)(buffer + 1 + 4) = 0;
+			*(u16*)(buffer + 1 + 2) = 0;
 
 			// Encrypt
 			bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
@@ -630,8 +690,6 @@ public:
 			// Compute updates
 			UpdateRTT(rtt);
 			UpdateLoss(seen, count);
-
-			// TODO: Keep alive
 		}
 	}
 };
@@ -648,15 +706,21 @@ public:
 
 	// Data to send to remote host
 	virtual void SendData(void *buffer, int bytes) = 0;
-
-	// Called when disconnected for some reason (timeout, etc)
-	virtual void Disconnected(int reason) = 0;
 };
 
 
 struct SinkSettings {
 	int chunk_size;
 	IDataSink *sink;
+};
+
+
+struct Packet : BatchHead {
+	// Block ID for this packet
+	u32 id;
+
+	// Data follows (settings.chunk_size bytes)
+	u8 data[1];
 };
 
 
@@ -667,23 +731,30 @@ class BrookSink {
 
 	wirehair::Encoder _encoder;
 
+	// Has any symbols to decode?
 	bool _has_symbols;
-	int _active_code_group;
 
+	// Next expected (code group, block id)
+	// Will be passed directly to IDataSink when received
+	int _next_group, _next_id;
+
+	// Statistics since the last pong
 	u32 _seen, _count;
 
-public:
-	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const SinkSettings &settings) {
-		if (_cipher.Initialize(key, "BROOK", calico::INITIATOR)) {
-			return false;
-		}
+	// Largest ID seen for each code group, for decoding the ID
+	u32 _largest_id[256];
 
-		_settings = settings;
+	// Last seen block count for each code group
+	u16 _block_count[256];
 
-		_has_symbols = false;
-		_active_code_group = 0;
-	}
+	// Number of original packets received for each code group
+	u16 _original_count[256];
+
+	// Packet buffer allocator
+	ReuseAllocator _allocator;
+
+	// Buffered data for each code group
+	Packet *_buffer[256];
 
 	// Send collected statistics
 	void SendPong(int code_group) {
@@ -707,6 +778,49 @@ public:
 		_settings.sink->SendData(pkt, len);
 	}
 
+	// Start a new code group
+	void StartGroup(int code_group) {
+		// Reset the largest seen id
+		_largest_id[code_group] = 0;
+
+		// Set the active code group
+		_next_group = code_group;
+
+		// Reset the next expected id
+		_next_id = 0;
+
+		// We have no symbols yet
+		_has_symbols = false;
+	}
+
+	Packet *AllocatePacket() {
+		return _allocator.AcquireObject<Packet>();
+	}
+
+	void FreePacket(Packet *p) {
+		BatchSet bs(p);
+		_allocator.ReleaseBatch(bs);
+	}
+
+public:
+	// On startup:
+	bool Initialize(const u8 key[SKEY_BYTES], const SinkSettings &settings) {
+		if (_cipher.Initialize(key, "BROOK", calico::INITIATOR)) {
+			return false;
+		}
+
+		_settings = settings;
+
+		_has_symbols = false;
+
+		// Expect (0, 0) first
+		_next_group = 0;
+		_next_id = 0;
+
+		// Initialize the packet allocator
+		_allocator.Initialize(sizeof(Packet)-1 + _settings.chunk_size);
+	}
+
 	// On packet received
 	void Recv(u8 *pkt, int len) {
 		u64 iv;
@@ -716,11 +830,19 @@ public:
 		if (len > PROTOCOL_OVERHEAD) {
 			// Read packet data
 			u8 code_group = pkt[0];
-			u32 id = getLE(*(u32*)(pkt + 1));
-			u16 block_count = getLE(*(u16*)(pkt + 1 + 4));
+			u32 id = getLE(*(u16*)(pkt + 1));
+			u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
 			u8 *data = pkt + PROTOCOL_OVERHEAD;
 
-			// Block count > 0 implies it is a check symbol, otherwise it is data
+			// Reconstruct block id
+			id = ReconstructCounter<16, u32>(_largest_id[code_group], id);
+
+			// If it is original data,
+			if (block_count == 0) {
+				// Increment the original count
+				_original_count[code_group]++;
+			} else {
+			}
 
 			// Pong first packet of each group
 			if (id == 0 && block_count == 0) {
@@ -734,11 +856,6 @@ public:
 			} else {
 			}
 		}
-	}
-
-	// Called occasionally to check for timeouts
-	void Tick() {
-		// TODO: Keep alive
 	}
 };
 
