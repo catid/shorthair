@@ -645,6 +645,7 @@ public:
 			*(u16*)(buffer + 1) = getLE((u16)_input_symbol);
 
 			// Set block count to zero for input symbols
+			// TODO: May need to set block count for at least the last symbol
 			*(u16*)(buffer + 1 + 2) = 0;
 
 			// Encrypt
@@ -701,8 +702,9 @@ public:
 
 class IDataSink {
 public:
-	// Called with data from remote host
-	virtual void OnData(void *buffer, int bytes) = 0;
+	// Called with the latest data block from remote host
+	// Called with null to indicate that data could not be recovered for this block
+	virtual void OnPacket(void *packet) = 0;
 
 	// Data to send to remote host
 	virtual void SendData(void *buffer, int bytes) = 0;
@@ -736,7 +738,7 @@ class BrookSink {
 
 	// Next expected (code group, block id)
 	// Will be passed directly to IDataSink when received
-	int _next_group, _next_id;
+	u32 _next_group, _next_id;
 
 	// Statistics since the last pong
 	u32 _seen, _count;
@@ -754,7 +756,7 @@ class BrookSink {
 	ReuseAllocator _allocator;
 
 	// Buffered data for each code group
-	Packet *_buffer[256];
+	Packet *_packet_buffer[256];
 
 	// Send collected statistics
 	void SendPong(int code_group) {
@@ -841,8 +843,29 @@ public:
 			if (block_count == 0) {
 				// Increment the original count
 				_original_count[code_group]++;
+
+				// If it is next in sequence,
+				if (code_group == _next_group && id == _next_id) {
+					// Pass it along
+					_settings.sink->OnPacket(data);
+
+					// Increment ID
+					_next_id++;
+
+					// TODO: Walk stored packets and pass along next if we already have it
+				}
 			} else {
+				// If we have enough data to start recovery process,
 			}
+
+			// Store it in case we need it as recovery data
+			Packet *p = AllocatePacket();
+			p->id = id;
+			memcpy(p->data, data, _settings.chunk_size);
+
+			// Add to front of linked list
+			p->batch_next = _packet_buffer[code_group];
+			_packet_buffer[code_group] = p;
 
 			// Pong first packet of each group
 			if (id == 0 && block_count == 0) {
