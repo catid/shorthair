@@ -731,6 +731,9 @@ struct CodeGroup {
 	// Is code group open?
 	bool open;
 
+	// Is code group completely passed?
+	bool done;
+
 	// Largest ID seen for each code group, for decoding the ID
 	u32 largest_id;
 
@@ -752,6 +755,7 @@ struct CodeGroup {
 
 	void Open() {
 		open = true;
+		done = false;
 		largest_id = 0;
 		block_count = 0;
 		original_seen = 0;
@@ -764,13 +768,14 @@ struct CodeGroup {
 		recovery_tail = 0;
 	}
 
-	void Close(ReuseAllocator *allocator) {
+	void Close(ReuseAllocator &allocator) {
 		open = false;
+		done = true;
 
 		// Free allocated packet memory O(1)
-		allocator->ReleaseBatch(BatchSet(passed_head, passed_tail));
-		allocator->ReleaseBatch(BatchSet(oos_head, oos_tail));
-		allocator->ReleaseBatch(BatchSet(recovery_head, recovery_tail));
+		allocator.ReleaseBatch(BatchSet(passed_head, passed_tail));
+		allocator.ReleaseBatch(BatchSet(oos_head, oos_tail));
+		allocator.ReleaseBatch(BatchSet(recovery_head, recovery_tail));
 	}
 
 	void AddPassed(Packet *p) {
@@ -863,7 +868,8 @@ class BrookSink {
 
 	// Next expected (code group, block id)
 	// Will be passed directly to IDataSink when received
-	u32 _next_group, _next_id;
+	u8 _next_group;
+	u32 _next_id;
 
 	// Statistics since the last pong
 	u32 _seen, _count;
@@ -884,8 +890,7 @@ class BrookSink {
 		*(u32*)(pkt + 1 + 4) = getLE(_count);
 
 		// Reset statistics
-		_seen = 0;
-		_count = 0;
+		_seen = _count = 0;
 
 		// Encrypt pong
 		int len = _cipher.Encrypt(pkt, PONG_SIZE, pkt, sizeof(pkt));
@@ -916,8 +921,7 @@ public:
 		_has_symbols = false;
 
 		// Expect (0, 0) first
-		_next_group = 0;
-		_next_id = 0;
+		_next_group = _next_id = 0;
 
 		// Initialize the packet allocator
 		_allocator.Initialize(sizeof(Packet)-1 + _settings.chunk_size);
@@ -956,10 +960,15 @@ public:
 			// Reconstruct block id
 			id = ReconstructCounter<16, u32>(group->largest_id, id);
 
-			// Generate a packet for the new data
-			Packet *p = AllocatePacket();
-			p->id = id;
-			memcpy(p->data, data, _settings.chunk_size);
+			// Pong first packet of each group as fast as possible
+			if (id == 0) {
+				SendPong(code_group);
+			}
+
+			// Attempt to fill in block count if it is already known
+			if (block_count == 0) {
+				block_count = group->block_count;
+			}
 
 			// Grab the next expected id
 			u32 next_id = _next_id;
@@ -978,6 +987,18 @@ public:
 				// Increment ID
 				next_id++;
 
+				// If just finished the group,
+				if (block_count && next_id >= block_count) {
+					// Close off this group and start the next.
+					// The relative group will now be -1 = 255,
+					// so further packets for this group will be
+					// dropped until the group id rolls back around.
+					group->Close(_allocator);
+					_next_group++;
+					_next_id = 0;
+					return;
+				}
+
 				// O(1) Check OOS
 				Packet *oos = group->oos_head;
 				while (oos && oos->id == next_id) {
@@ -986,6 +1007,18 @@ public:
 
 					// Increment ID
 					next_id++;
+
+					// If just finished the group,
+					if (block_count && next_id >= group->block_count) {
+						// Close off this group and start the next.
+						// The relative group will now be -1 = 255,
+						// so further packets for this group will be
+						// dropped until the group id rolls back around.
+						group->Close(_allocator);
+						_next_group++;
+						_next_id = 0;
+						return;
+					}
 
 					// Store next in oos list
 					Packet *next = (Packet*)oos->batch_next;
@@ -1000,13 +1033,27 @@ public:
 					oos = next;
 				}
 
-				// Update ID
-				_next_id = next_id;
+				// If not done with code group
+				if (!group->done) {
+					// Store the data in case we lose a packet
+					Packet *p = AllocatePacket();
+					p->id = id;
+					memcpy(p->data, data, _settings.chunk_size);
+
+					// Add to passed list
+					group->AddPassed(p);
+				} else {
+					// Update ID
+					_next_id = next_id;
+				}
+			} else {
+				// 
+				group->AddOOS(p);
 			}
 
-			// Pong first packet of each group
-			if (id == 0 && block_count == 0) {
-				SendPong(code_group);
+			// If ID is the largest seen so far,
+			if (id > group->largest_id) {
+				group->largest_id = id;
 			}
 
 			// TODO: Implement IV-based packet-loss estimator
