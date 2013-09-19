@@ -300,6 +300,7 @@ static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
 static const int MAX_PROTOCOL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
 static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
 static const int PONG_SIZE = 1 + 4 + 4;
+static const u8 PAST_GROUP_THRESH = 127; // Group ID wrap threshold
 
 
 
@@ -763,6 +764,15 @@ struct CodeGroup {
 		recovery_tail = 0;
 	}
 
+	void Close(ReuseAllocator *allocator) {
+		open = false;
+
+		// Free allocated packet memory O(1)
+		allocator->ReleaseBatch(BatchSet(passed_head, passed_tail));
+		allocator->ReleaseBatch(BatchSet(oos_head, oos_tail));
+		allocator->ReleaseBatch(BatchSet(recovery_head, recovery_tail));
+	}
+
 	void AddPassed(Packet *p) {
 		// Insert at head
 		if (passed_head) {
@@ -781,6 +791,23 @@ struct CodeGroup {
 			recovery_head = recovery_tail = p;
 		}
 		recovery_head = p;
+	}
+
+	// Remove head of OOS list
+	void PopOOS() {
+		Packet *p = oos_head;
+
+		// If head exists (it should...),
+		if CAT_LIKELY(p) {
+			// Shift ahead
+			p = p->batch_next;
+			oos_head = p;
+
+			// If list is now empty,
+			if (!p) {
+				oos_tail = 0;
+			}
+		}
 	}
 
 	void AddOOS(Packet *p) {
@@ -869,16 +896,6 @@ class BrookSink {
 		_settings.sink->SendData(pkt, len);
 	}
 
-	// Close off a code group and stop accepting symbols
-	void CloseGroup(int code_group) {
-		group->open = false;
-
-		// Free allocated packet memory O(1)
-		_allocator.ReleaseBatch(BatchSet(group->passed_head, group->passed_tail));
-		_allocator.ReleaseBatch(BatchSet(group->oos_head, group->oos_tail));
-		_allocator.ReleaseBatch(BatchSet(group->recovery_head, group->recovery_tail));
-	}
-
 	Packet *AllocatePacket() {
 		return _allocator.AcquireObject<Packet>();
 	}
@@ -905,6 +922,9 @@ public:
 
 		// Initialize the packet allocator
 		_allocator.Initialize(sizeof(Packet)-1 + _settings.chunk_size);
+
+		// Clear group data
+		CAT_OBJCLR(_groups);
 	}
 
 	// On packet received
@@ -916,6 +936,20 @@ public:
 		if (len > PROTOCOL_OVERHEAD) {
 			// Read packet data
 			u8 code_group = pkt[0];
+
+			// Rotate group id
+			u8 relative_group = code_group - _next_group;
+
+			// If received group is in the past,
+			if (relative_group > PAST_GROUP_THRESH) {
+				// Ignore data in the past, which happens often
+				// when there is no packet loss and the error
+				// correction codes are not useful.
+				return;
+			}
+
+			CodeGroup *group = &_groups[code_group];
+
 			u32 id = getLE(*(u16*)(pkt + 1));
 			u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
 			u8 *data = pkt + PROTOCOL_OVERHEAD;
@@ -923,15 +957,52 @@ public:
 			// Reconstruct block id
 			id = ReconstructCounter<16, u32>(_largest_id[code_group], id);
 
+			// Generate a packet for the new data
+			Packet *p = AllocatePacket();
+			p->id = id;
+			memcpy(p->data, data, _settings.chunk_size);
+
+			// Grab the next expected id
+			u32 next_id = _next_id;
+
+			// If group is not open yet,
+			if (!group->open) {
+				// Open group
+				group->Open();
+			}
+
 			// If it is next in sequence,
-			if (code_group == _next_group && id == _next_id) {
-				// Pass it along
+			if (code_group == _next_group && id == next_id) {
+				// Pass it along immediately
 				_settings.sink->OnPacket(data);
 
 				// Increment ID
-				_next_id++;
+				next_id++;
 
-				// TODO: Walk stored packets and pass along next if we already have it
+				// O(1) Check OOS
+				Packet *oos = oos_head;
+				while (oos && oos->id == next_id) {
+					// Pass along queued data
+					_settings.sink->OnPacket(oos->data);
+
+					// Increment ID
+					next_id++;
+
+					// Store next in oos list
+					Packet *next = oos->batch_next;
+
+					// Pop off OOS head
+					group->PopOOS();
+
+					// Add it to passed list
+					group->AddPassed(oos);
+
+					// Continue with next
+					oos = next;
+				}
+
+				// Update ID
+				_next_id = next_id;
 			}
 
 			// If it is original data,
@@ -941,11 +1012,6 @@ public:
 			} else {
 				// If we have enough data to start recovery process,
 			}
-
-			// Store it in case we need it as recovery data
-			Packet *p = AllocatePacket();
-			p->id = id;
-			memcpy(p->data, data, _settings.chunk_size);
 
 			// Add to front of linked list
 			p->batch_next = _packet_buffer[code_group];
