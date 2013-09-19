@@ -62,9 +62,10 @@ static Clock m_clock;
  * rewritten when requirements change.
  *
  * Wirehair/RaptorQ improves on this, allowing us to use only as much bandwidth
- * as needed, covering any number of packets required, while requiring an
- * acceptable amount of performance loss compared to RS-codes, and offering
- * optimal use of the channel and lower latency compared to ARQ-based approaches.
+ * as needed, covering any number of packets required.  These are "rateless"
+ * codes that require an acceptable amount of performance loss compared to
+ * RS-codes, and offering optimal use of the channel and lower latency compared
+ * to ARQ-based approaches.
  *
  *
  * ==> Using UDP means we have to implement flow control right??
@@ -92,13 +93,9 @@ static Clock m_clock;
  * equation (3) from:
  * http://www.eurecom.fr/en/publication/489/download/cm-nikane-000618.pdf
  *
- * The targetted loss rate may not be achieveable within the given channel,
- * but Wirehair/RaptorQ schemes allow you to finely tune the code "rate" to
- * match exactly what is needed as noted in the above paper.
- *
- * It seems like the best rate should be selected by evaluating equation (3)
- * with several exponents until the estimated loss rate matches the targetted
- * loss rate.  Faster approaches are feasible though unnecessary for evaulation.
+ * It seems like the best redundancy should be selected by evaluating equation
+ * (3) with several exponents until the estimated loss rate matches the
+ * targetted loss rate.  Faster approaches are feasible.
  *
  *
  * ==> (1) How should we interleave/overlap/etc the codes?
@@ -621,6 +618,8 @@ public:
 		// Calculate tick interval
 		u32 tick_interval = ms - _last_tick;
 
+		// TODO: When transmitting data, interleave check packets with original data to reduce the impact of burst losses
+
 		// Read data in chunks
 		u8 buffer[MAX_PKT_SIZE];
 		u8 *data = buffer + PROTOCOL_OVERHEAD;
@@ -924,12 +923,69 @@ class BrookSink {
 		_settings.sink->SendData(pkt, len);
 	}
 
-	Packet *AllocatePacket() {
-		return _allocator.AcquireObject<Packet>();
+	Packet *AllocatePacket(u32 id, const void *data) {
+		Packet *p = _allocator.AcquireObject<Packet>();
+		p->batch_next = 0;
+		p->id = id;
+		memcpy(p->data, data, _settings.chunk_size);
+		return p;
 	}
 
 	void FreePacket(Packet *p) {
 		_allocator.ReleaseBatch(p);
+	}
+
+	void FinishGroup(Group *group) {
+		CAT_DEBUG_ENFORCE(group == &_groups[_next_group]);
+
+		// Close off this group and start the next.
+		// The relative group will now be -1 = 255,
+		// so further packets for this group will be
+		// dropped until the group id rolls back around.
+		group->Close(_allocator);
+
+		// Decoder is now inactive
+		_decoding = false;
+
+		// Set next expected (group, id)
+		_next_group++;
+		_next_id = 0;
+	}
+
+	// Returns true if code group was finished, so packet can be discarded
+	bool ProcessOOS(CodeGroup *group) {
+		bool finished = false;
+
+		// O(1) Check OOS
+		Packet *oos = group->oos_head;
+		while (oos && oos->id == _next_id) {
+			// Pass along queued data
+			_settings.sink->OnPacket(oos->data);
+
+			// Increment ID
+			_next_id++;
+
+			// If just finished the group,
+			if (block_count && _next_id >= group->block_count) {
+				finished = true;
+
+				// TODO: Continue looping on the next group
+			}
+
+			// Store next in oos list
+			Packet *next = (Packet*)oos->batch_next;
+
+			// Pop off OOS head
+			group->PopOOS();
+
+			// Add it to passed list
+			group->AddPassed(oos);
+
+			// Continue with next
+			oos = next;
+		}
+
+		return finished;
 	}
 
 public:
@@ -993,9 +1049,6 @@ public:
 				block_count = group->block_count;
 			}
 
-			// Grab the next expected id
-			u32 next_id = _next_id;
-
 			// If group is not open yet,
 			if (!group->open) {
 				// Open group
@@ -1012,90 +1065,41 @@ public:
 			Packet *p;
 
 			// If it is next in sequence,
-			if (code_group == _next_group && id == next_id) {
+			if (code_group == _next_group && id == _next_id) {
 				// Pass it along immediately
 				_settings.sink->OnPacket(data);
 
 				// Increment ID
-				next_id++;
+				_next_id++;
 
 				// If just finished the group,
-				if (block_count && next_id >= block_count) {
+				if ((block_count && _next_id >= block_count) ||
+					ProcessOOS(group)) {
 					// Zero-loss case.
-					// Close off this group and start the next.
-					// The relative group will now be -1 = 255,
-					// so further packets for this group will be
-					// dropped until the group id rolls back around.
-					group->Close(_allocator);
-					_decoding = false;
-					_next_group++;
-					_next_id = 0;
+					// ProcessOOS() can return true and finish the group when
+					// all needed packet data was found in OOS list.
+					FinishGroup(group);
 					return;
-				}
-
-				// TODO: Move this loop into a separate function
-
-				// O(1) Check OOS
-				Packet *oos = group->oos_head;
-				while (oos && oos->id == next_id) {
-					// Pass along queued data
-					_settings.sink->OnPacket(oos->data);
-
-					// Increment ID
-					next_id++;
-
-					// If just finished the group,
-					if (block_count && next_id >= group->block_count) {
-						// Zero-loss out of sequence case.
-						// Close off this group and start the next.
-						// The relative group will now be -1 = 255,
-						// so further packets for this group will be
-						// dropped until the group id rolls back around.
-						group->Close(_allocator);
-						_decoding = false;
-						// TODO: Group closing should be in this class
-						_next_group++;
-						_next_id = 0;
-
-						// TODO: Continue looping on the next group
-
-						return;
-					}
-
-					// Store next in oos list
-					Packet *next = (Packet*)oos->batch_next;
-
-					// Pop off OOS head
-					group->PopOOS();
-
-					// Add it to passed list
-					group->AddPassed(oos);
-
-					// Continue with next
-					oos = next;
 				}
 
 				// NOTE: At this point we have not received all the original
 				// data yet, so store anything we get for recovery:
+				p = AllocatePacket(id, data);
 
-				// Store the data in case we lose a packet
-				// TODO: Construct packet on one line
-				p = AllocatePacket();
-				p->id = id;
-				memcpy(p->data, data, _settings.chunk_size);
-
-				// Add to passed list
+				// Add to passed list since it was already passed along
 				group->AddPassed(p);
-
-				// Update ID
-				_next_id = next_id;
 
 				// Fall-thru to handle out of sequence case with recovery:
 			} else {
-				// Store the data
-				p = AllocatePacket();
-				p->id = id;
-				memcpy(p->data, data, _settings.chunk_size);
+				// Zero-loss case: If seen all the original data for this group,
+				if (block_count && group->original_seen >= block_count) {
+					// Ignore any new data
+					return;
+				}
+
+				// Otherwise: Store any data we receive until we get a chance
+				// to run the decoder on it.
+				p = AllocatePacket(id, data);
 
 				// If out of sequence original data,
 				if (!block_count || id < block_count) {
