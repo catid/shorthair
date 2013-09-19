@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2009-2012 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013 Chris Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -9,7 +9,7 @@
 	* Redistributions in binary form must reproduce the above copyright notice,
 	  this list of conditions and the following disclaimer in the documentation
 	  and/or other materials provided with the distribution.
-	* Neither the name of LibCat nor the names of its contributors may be used
+	* Neither the name of Brook nor the names of its contributors may be used
 	  to endorse or promote products derived from this software without
 	  specific prior written permission.
 
@@ -178,6 +178,9 @@ namespace cat {
 #if !defined(CAT_TLS)
 # define CAT_TLS __declspec( thread )
 #endif
+#if defined(CAT_COMPILER_MSVC)
+# pragma warning(disable: 4227) // Squelch annoying warning from MSVC when using __restrict
+#endif
 #if !defined(CAT_RESTRICT)
 # define CAT_RESTRICT __restrict
 #endif
@@ -195,6 +198,12 @@ namespace cat {
 #endif
 #if !defined(CAT_FUNCTION)
 # define CAT_FUNCTION "???"
+#endif
+#if !defined(CAT_LIKELY)
+# define CAT_LIKELY(expr) ( (expr) != 0 )
+#endif
+#if !defined(CAT_UNLIKELY)
+# define CAT_UNLIKELY(expr) ( (expr) != 0 )
 #endif
 
 // GCC-compatible compilers
@@ -239,25 +248,21 @@ namespace cat {
 #if !defined(CAT_FUNCTION)
 # define CAT_FUNCTION "???"
 #endif
+#if !defined(CAT_LIKELY)
+# define CAT_LIKELY(expr) ( __builtin_expect (( (expr) != 0 ), 1) )
+#endif
+#if !defined(CAT_UNLIKELY)
+# define CAT_UNLIKELY(expr) ( __builtin_expect (( (expr) != 0 ), 0) )
+#endif
 
 #endif // CAT_COMPILER_COMPAT_*
 
 
 //// Debug Flag ////
 
-#if defined(CAT_COMPILER_MSVC)
-
-# if defined(_DEBUG)
+# if defined(_DEBUG) || defined(DEBUG)
 #  define CAT_DEBUG
 # endif
-
-#else
-
-# if !defined(NDEBUG)
-#  define CAT_DEBUG
-# endif
-
-#endif
 
 
 //// Instruction Set Architecture ////
@@ -417,12 +422,12 @@ namespace cat {
 #if defined(__SVR4) && defined(__sun)
 # define CAT_OS_SOLARIS
 
-#elif defined(__APPLE__) && defined(TARGET_OS_IPHONE)
-# define CAT_OS_IPHONE
-# define CAT_OS_APPLE
-
 #elif defined(__APPLE__) && (defined(__MACH__) || defined(__DARWIN__))
 # define CAT_OS_OSX
+# define CAT_OS_APPLE
+
+#elif defined(__APPLE__) && defined(TARGET_OS_IPHONE)
+# define CAT_OS_IPHONE
 # define CAT_OS_APPLE
 
 #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__FreeBSD__)
@@ -644,6 +649,13 @@ template<typename T> CAT_INLINE T Bound(const T &minimum, const T &maximum, cons
 	if (x > maximum) return maximum;
 	return x;
 }
+
+// Absolute Value
+template<typename T> CAT_INLINE T AbsVal(const T &x)
+{
+	return x < 0 ? -x : x;
+}
+
 
 
 //// Miscellaneous bitwise macros ////

@@ -800,7 +800,7 @@ struct CodeGroup {
 		// If head exists (it should...),
 		if CAT_LIKELY(p) {
 			// Shift ahead
-			p = p->batch_next;
+			p = (Packet*)p->batch_next;
 			oos_head = p;
 
 			// If list is now empty,
@@ -823,7 +823,7 @@ struct CodeGroup {
 		// Attempt fast O(1) insertion at end
 		if (oos_tail && id > oos_tail->id) {
 			// Insert at the end
-			oos_tail->next = p;
+			oos_tail->batch_next = p;
 			p->batch_next = 0;
 			oos_tail = p;
 			return;
@@ -831,7 +831,7 @@ struct CodeGroup {
 
 		// Search for insertion point from front, shooting for O(1)
 		Packet *prev = 0, *next;
-		for (next = oos_head; next; next = oos->batch_next) {
+		for (next = oos_head; next; next = (Packet*)next->batch_next) {
 			if (id < next->id) {
 				break;
 			}
@@ -901,8 +901,7 @@ class BrookSink {
 	}
 
 	void FreePacket(Packet *p) {
-		BatchSet bs(p);
-		_allocator.ReleaseBatch(bs);
+		_allocator.ReleaseBatch(p);
 	}
 
 public:
@@ -955,7 +954,7 @@ public:
 			u8 *data = pkt + PROTOCOL_OVERHEAD;
 
 			// Reconstruct block id
-			id = ReconstructCounter<16, u32>(_largest_id[code_group], id);
+			id = ReconstructCounter<16, u32>(group->largest_id, id);
 
 			// Generate a packet for the new data
 			Packet *p = AllocatePacket();
@@ -980,7 +979,7 @@ public:
 				next_id++;
 
 				// O(1) Check OOS
-				Packet *oos = oos_head;
+				Packet *oos = group->oos_head;
 				while (oos && oos->id == next_id) {
 					// Pass along queued data
 					_settings.sink->OnPacket(oos->data);
@@ -989,7 +988,7 @@ public:
 					next_id++;
 
 					// Store next in oos list
-					Packet *next = oos->batch_next;
+					Packet *next = (Packet*)oos->batch_next;
 
 					// Pop off OOS head
 					group->PopOOS();
@@ -1004,18 +1003,6 @@ public:
 				// Update ID
 				_next_id = next_id;
 			}
-
-			// If it is original data,
-			if (block_count == 0) {
-				// Increment the original count
-				_original_count[code_group]++;
-			} else {
-				// If we have enough data to start recovery process,
-			}
-
-			// Add to front of linked list
-			p->batch_next = _packet_buffer[code_group];
-			_packet_buffer[code_group] = p;
 
 			// Pong first packet of each group
 			if (id == 0 && block_count == 0) {
