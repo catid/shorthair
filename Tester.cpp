@@ -726,6 +726,104 @@ struct Packet : BatchHead {
 };
 
 
+struct CodeGroup {
+	// Is code group open?
+	bool open;
+
+	// Largest ID seen for each code group, for decoding the ID
+	u32 largest_id;
+
+	// Last seen block count for each code group
+	u16 block_count;
+
+	// Received symbol counts
+	u16 original_seen;
+	u16 total_seen;
+
+	// Data that has been passed along already
+	Packet *passed_head, *passed_tail;
+
+	// Sorted out-of-sequence data: head=lowest id, tail=highest id
+	Packet *oos_head, *oos_tail;
+
+	// Recovery symbols
+	Packet *recovery_head, *recovery_tail;
+
+	void Open() {
+		open = true;
+		largest_id = 0;
+		block_count = 0;
+		original_seen = 0;
+		total_seen = 0;
+		passed_head = 0;
+		passed_tail = 0;
+		oos_head = 0;
+		oos_tail = 0;
+		recovery_head = 0;
+		recovery_tail = 0;
+	}
+
+	void AddPassed(Packet *p) {
+		// Insert at head
+		if (passed_head) {
+			p->batch_next = passed_head;
+		} else {
+			passed_head = passed_tail = p;
+		}
+		passed_head = p;
+	}
+
+	void AddRecovery(Packet *p) {
+		// Insert at head
+		if (recovery_head) {
+			p->batch_next = recovery_head;
+		} else {
+			recovery_head = recovery_tail = p;
+		}
+		recovery_head = p;
+	}
+
+	void AddOOS(Packet *p) {
+		// Insert into empty list
+		if (!oos_head) {
+			oos_head = oos_tail = p;
+			p->batch_next = 0;
+			return;
+		}
+
+		const u32 id = p->id;
+
+		// Attempt fast O(1) insertion at end
+		if (oos_tail && id > oos_tail->id) {
+			// Insert at the end
+			oos_tail->next = p;
+			p->batch_next = 0;
+			oos_tail = p;
+			return;
+		}
+
+		// Search for insertion point from front, shooting for O(1)
+		Packet *prev = 0, *next;
+		for (next = oos_head; next; next = oos->batch_next) {
+			if (id < next->id) {
+				break;
+			}
+		}
+
+		// If inserting after prev,
+		if (prev) {
+			prev->batch_next = p;
+		} else {
+			oos_head = p;
+		}
+		if (!next) {
+			oos_tail = p;
+		}
+		p->batch_next = next;
+	}
+};
+
+
 class BrookSink {
 	SinkSettings _settings;
 
@@ -743,20 +841,11 @@ class BrookSink {
 	// Statistics since the last pong
 	u32 _seen, _count;
 
-	// Largest ID seen for each code group, for decoding the ID
-	u32 _largest_id[256];
-
-	// Last seen block count for each code group
-	u16 _block_count[256];
-
-	// Number of original packets received for each code group
-	u16 _original_count[256];
-
 	// Packet buffer allocator
 	ReuseAllocator _allocator;
 
-	// Buffered data for each code group
-	Packet *_packet_buffer[256];
+	// Code groups
+	CodeGroup _groups[256];
 
 	// Send collected statistics
 	void SendPong(int code_group) {
@@ -780,19 +869,14 @@ class BrookSink {
 		_settings.sink->SendData(pkt, len);
 	}
 
-	// Start a new code group
-	void StartGroup(int code_group) {
-		// Reset the largest seen id
-		_largest_id[code_group] = 0;
+	// Close off a code group and stop accepting symbols
+	void CloseGroup(int code_group) {
+		group->open = false;
 
-		// Set the active code group
-		_next_group = code_group;
-
-		// Reset the next expected id
-		_next_id = 0;
-
-		// We have no symbols yet
-		_has_symbols = false;
+		// Free allocated packet memory O(1)
+		_allocator.ReleaseBatch(BatchSet(group->passed_head, group->passed_tail));
+		_allocator.ReleaseBatch(BatchSet(group->oos_head, group->oos_tail));
+		_allocator.ReleaseBatch(BatchSet(group->recovery_head, group->recovery_tail));
 	}
 
 	Packet *AllocatePacket() {
@@ -839,21 +923,21 @@ public:
 			// Reconstruct block id
 			id = ReconstructCounter<16, u32>(_largest_id[code_group], id);
 
+			// If it is next in sequence,
+			if (code_group == _next_group && id == _next_id) {
+				// Pass it along
+				_settings.sink->OnPacket(data);
+
+				// Increment ID
+				_next_id++;
+
+				// TODO: Walk stored packets and pass along next if we already have it
+			}
+
 			// If it is original data,
 			if (block_count == 0) {
 				// Increment the original count
 				_original_count[code_group]++;
-
-				// If it is next in sequence,
-				if (code_group == _next_group && id == _next_id) {
-					// Pass it along
-					_settings.sink->OnPacket(data);
-
-					// Increment ID
-					_next_id++;
-
-					// TODO: Walk stored packets and pass along next if we already have it
-				}
 			} else {
 				// If we have enough data to start recovery process,
 			}
