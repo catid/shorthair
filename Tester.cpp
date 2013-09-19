@@ -19,7 +19,7 @@ static Clock m_clock;
 
 
 /*
- * A graphical representation of streaming in general (disregarding FEC):
+ * A visual representation of streaming in general (disregarding FEC):
  *
  * | <---------------------------- buffer size ----> | <- processed ---->
  * | <- in  transit -> |                             |
@@ -293,6 +293,7 @@ static Clock m_clock;
  * measured packet loss as seen at the sink and to measure the round-trip time
  * for deciding how often to switch codes.
  */
+
 
 static const int SKEY_BYTES = 32;
 static const int MAX_CHUNK_SIZE = 1400;
@@ -768,6 +769,16 @@ struct CodeGroup {
 		recovery_tail = 0;
 	}
 
+	bool CanRecover() {
+		// If block count is still unknown,
+		if (block_count <= 0) {
+			return false;
+		}
+
+		// If recovery is possible,
+		return total_seen >= block_count;
+	}
+
 	void Close(ReuseAllocator &allocator) {
 		open = false;
 		done = true;
@@ -779,6 +790,9 @@ struct CodeGroup {
 	}
 
 	void AddPassed(Packet *p) {
+		++original_seen;
+		++total_seen;
+
 		// Insert at head
 		if (passed_head) {
 			p->batch_next = passed_head;
@@ -789,6 +803,8 @@ struct CodeGroup {
 	}
 
 	void AddRecovery(Packet *p) {
+		++total_seen;
+
 		// Insert at head
 		if (recovery_head) {
 			p->batch_next = recovery_head;
@@ -799,23 +815,29 @@ struct CodeGroup {
 	}
 
 	// Remove head of OOS list
+	// Precondition: There is at least one element in the list
 	void PopOOS() {
+		--original_seen;
+		--total_seen;
+
 		Packet *p = oos_head;
 
-		// If head exists (it should...),
-		if CAT_LIKELY(p) {
-			// Shift ahead
-			p = (Packet*)p->batch_next;
-			oos_head = p;
+		CAT_ENFORCE(p && original_seen > 0);
 
-			// If list is now empty,
-			if (!p) {
-				oos_tail = 0;
-			}
+		// Shift ahead
+		p = (Packet*)p->batch_next;
+		oos_head = p;
+
+		// If list is now empty,
+		if (!p) {
+			oos_tail = 0;
 		}
 	}
 
 	void AddOOS(Packet *p) {
+		++original_seen;
+		++total_seen;
+
 		// Insert into empty list
 		if (!oos_head) {
 			oos_head = oos_tail = p;
@@ -861,10 +883,11 @@ class BrookSink {
 
 	calico::Calico _cipher;
 
-	wirehair::Encoder _encoder;
+	// Is decoder active?
+	bool _decoding;
 
-	// Has any symbols to decode?
-	bool _has_symbols;
+	// NOTE: Using codec directly since we want to regenerate blocks instead of whole messages
+	wirehair::Codec _decoder;
 
 	// Next expected (code group, block id)
 	// Will be passed directly to IDataSink when received
@@ -918,7 +941,7 @@ public:
 
 		_settings = settings;
 
-		_has_symbols = false;
+		_decoding = false;
 
 		// Expect (0, 0) first
 		_next_group = _next_id = 0;
@@ -979,6 +1002,15 @@ public:
 				group->Open();
 			}
 
+			// If ID is the largest seen so far,
+			if (id > group->largest_id) {
+				// Update largest seen ID for decoding ID in next packet
+				group->largest_id = id;
+			}
+
+			// Packet that will contain this data
+			Packet *p;
+
 			// If it is next in sequence,
 			if (code_group == _next_group && id == next_id) {
 				// Pass it along immediately
@@ -989,15 +1021,19 @@ public:
 
 				// If just finished the group,
 				if (block_count && next_id >= block_count) {
+					// Zero-loss case.
 					// Close off this group and start the next.
 					// The relative group will now be -1 = 255,
 					// so further packets for this group will be
 					// dropped until the group id rolls back around.
 					group->Close(_allocator);
+					_decoding = false;
 					_next_group++;
 					_next_id = 0;
 					return;
 				}
+
+				// TODO: Move this loop into a separate function
 
 				// O(1) Check OOS
 				Packet *oos = group->oos_head;
@@ -1010,13 +1046,19 @@ public:
 
 					// If just finished the group,
 					if (block_count && next_id >= group->block_count) {
+						// Zero-loss out of sequence case.
 						// Close off this group and start the next.
 						// The relative group will now be -1 = 255,
 						// so further packets for this group will be
 						// dropped until the group id rolls back around.
 						group->Close(_allocator);
+						_decoding = false;
+						// TODO: Group closing should be in this class
 						_next_group++;
 						_next_id = 0;
+
+						// TODO: Continue looping on the next group
+
 						return;
 					}
 
@@ -1033,35 +1075,82 @@ public:
 					oos = next;
 				}
 
-				// If not done with code group
-				if (!group->done) {
-					// Store the data in case we lose a packet
-					Packet *p = AllocatePacket();
-					p->id = id;
-					memcpy(p->data, data, _settings.chunk_size);
+				// NOTE: At this point we have not received all the original
+				// data yet, so store anything we get for recovery:
 
-					// Add to passed list
-					group->AddPassed(p);
-				} else {
-					// Update ID
-					_next_id = next_id;
-				}
+				// Store the data in case we lose a packet
+				// TODO: Construct packet on one line
+				p = AllocatePacket();
+				p->id = id;
+				memcpy(p->data, data, _settings.chunk_size);
+
+				// Add to passed list
+				group->AddPassed(p);
+
+				// Update ID
+				_next_id = next_id;
+
+				// Fall-thru to handle out of sequence case with recovery:
 			} else {
-				// 
-				group->AddOOS(p);
+				// Store the data
+				p = AllocatePacket();
+				p->id = id;
+				memcpy(p->data, data, _settings.chunk_size);
+
+				// If out of sequence original data,
+				if (!block_count || id < block_count) {
+					// Add to out of sequence list
+					group->AddOOS(p);
+				} else {
+					// Add to recovery list
+					group->AddRecovery(p);
+				}
+
+				// Fall-thru to try to recover with the new data
 			}
 
-			// If ID is the largest seen so far,
-			if (id > group->largest_id) {
-				group->largest_id = id;
+			// If waiting for this group and recovery is possible,
+			if (code_group == _next_group && group->CanRecover()) {
+				wirehair::Result r;
+
+				// If not decoding yet,
+				if (!_decoding) {
+					r = _decoder.InitializeDecoder(block_count * _settings.chunk_size, _settings.chunk_size);
+
+					// We should always initialize correctly
+					CAT_ENFORCE(!r && _decoder.BlockCount() == block_count);
+
+					// Decoding process has started
+					_decoding = true;
+
+					// Add passed packets
+					for (Packet *p = group->passed_head; p; p = (Packet*)p->batch_next) {
+						r = _decoder.DecodeFeed(p->id, p->data);
+					}
+
+					// Add OOS packets
+					for (Packet *p = group->oos_head; p; p = (Packet*)p->batch_next) {
+						r = _decoder.DecodeFeed(p->id, p->data);
+					}
+
+					// Add Recovery packets
+					for (Packet *p = group->oos_head; p; p = (Packet*)p->batch_next) {
+						r = _decoder.DecodeFeed(p->id, p->data);
+					}
+				} else {
+					// Feed the latest packet
+					r = _decoder.DecodeFeed(p->id, p->data);
+				}
+
+				// We should be able to recover now
+				CAT_ENFORCE(!r);
+
+				// TODO: Split recovery loop off into a function
+				r = _decoder.ReconstructBlock(_next_id, data);
 			}
 
 			// TODO: Implement IV-based packet-loss estimator
 			// TODO: Implement decoder time-based buffering
-
-			if (_has_symbols) {
-			} else {
-			}
 		}
 	}
 };
