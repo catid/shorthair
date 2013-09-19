@@ -1124,29 +1124,29 @@ public:
 					_decoding = true;
 
 					// Add passed packets
-					for (Packet *p = group->passed_head; p; p = (Packet*)p->batch_next) {
-						r = _decoder.DecodeFeed(p->id, p->data);
+					for (Packet *op = group->passed_head; op; op = (Packet*)op->batch_next) {
+						r = _decoder.DecodeFeed(op->id, op->data);
 					}
 
 					// Add OOS packets
-					for (Packet *p = group->oos_head; p; p = (Packet*)p->batch_next) {
-						r = _decoder.DecodeFeed(p->id, p->data);
+					for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
+						r = _decoder.DecodeFeed(op->id, op->data);
 					}
 
 					// Add Recovery packets
-					for (Packet *p = group->oos_head; p; p = (Packet*)p->batch_next) {
-						r = _decoder.DecodeFeed(p->id, p->data);
+					for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
+						r = _decoder.DecodeFeed(op->id, op->data);
 					}
 				} else {
 					// Feed the latest packet
 					r = _decoder.DecodeFeed(p->id, p->data);
 				}
 
-				// We should be able to recover now
-				CAT_ENFORCE(!r);
-
-				// TODO: Split recovery loop off into a function
-				r = _decoder.ReconstructBlock(_next_id, data);
+				// If recovery was successful,
+				if (!r) {
+					// TODO: Split recovery loop off into a function
+					r = _decoder.ReconstructBlock(_next_id, data);
+				}
 			}
 
 			// TODO: Implement IV-based packet-loss estimator
