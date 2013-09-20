@@ -6,6 +6,7 @@
 #include "EndianNeutral.hpp"
 #include "ReuseAllocator.hpp"
 #include "BitMath.hpp"
+#include "SmartArray.hpp"
 using namespace cat;
 
 #include <vector>
@@ -293,10 +294,10 @@ static Clock m_clock;
 
 
 static const int SKEY_BYTES = 32;
-static const int MAX_CHUNK_SIZE = 1400;
 static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
-static const int MAX_PROTOCOL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
-static const int MAX_PKT_SIZE = MAX_CHUNK_SIZE + MAX_PROTOCOL_OVERHEAD;
+static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
+static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
+static const int BROOK_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
 static const int PONG_SIZE = 1 + 4 + 4;
 static const u8 PAST_GROUP_THRESH = 127; // Group ID wrap threshold
 
@@ -446,12 +447,18 @@ public:
 struct SourceSettings {
 	float min_loss;				// [0..1] packetloss probability lower limit
 	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
-	int buffer_time;			// Milliseconds of buffering
-	int chunk_size;				// Bytes per data chunk
+	int buffer_time;			// Milliseconds for end-to-end buffering
+	int max_bytes;				// Maximum input read size in bytes
 	IDataSource *source;		// Data source
 };
 
 
+struct Sent : BatchHead {
+	u16 size;
+
+	// Data follows (length+ bytes)
+	u8 data[1];
+};
 
 
 class BrookSource {
@@ -460,6 +467,9 @@ class BrookSource {
 	calico::Calico _cipher;
 
 	wirehair::Encoder _encoder;
+
+	// Bytes per wirehair block
+	int _block_bytes;
 
 	DelayEstimator _delay;
 	LossEstimator _loss;
@@ -470,16 +480,19 @@ class BrookSource {
 
 	// Last time we had a tick
 	u32 _last_tick;
-	bool _has_symbols;
-	u32 _input_symbol;
-	u32 _check_symbol;
 	u8 _code_group;
+
+	// Packet buffer allocator
+	ReuseAllocator _allocator;
 
 	// Swap times for each code group for RTT calculation
 	u32 _group_stamps[256];
 
-	// Buffer of original data being sent for next swap
-	vector<u8> _buffer;
+	// Padded outgoing packet buffer for encoder
+	SmartArray<u8> _encode_buffer;
+
+	// Packet workspace buffer
+	SmartArray<u8> _packet_buffer;
 
 	// Calculated interval from delay
 	u32 _swap_interval;
@@ -487,34 +500,89 @@ class BrookSource {
 	// Next time to trigger a swap
 	u32 _swap_trigger;
 
-	// Setup encoder on buffered data
-	void Swap() {
-		if (_buffer.size() <= 0) {
-			_has_symbols = false;
-		} else {
-			_has_symbols = true;
+	// Next group packet queue
+	Packet *_next_head, *_next_tail;
+	int _next_count;	// Number of packets
+	int _next_bytes;	// Number of bytes max, excluding 2 byte implied length field
 
-			// NOTE: After this function call, the input data can be safely modified so long
-			// as Encode() requests come after the original data block count.
-			CAT_ENFORCE(!_encoder.BeginEncode(&_buffer[0], _buffer.size(), _settings.chunk_size));
+	// Next symbol ID or 0 for uninitialized state
+	u32 _next_id;
 
-			// Start symbols right after original data
-			_check_symbol = _encoder.BlockCount();
-
-			CAT_ENFORCE(_check_symbol == _input_symbol);
+	void QueueSent(Sent *p) {
+		// If this new packet is larger than the previous ones,
+		if (_next_bytes < p->size) {
+			// Remember the largest size for when we start emitting check symbols
+			_next_bytes = p->size;
 		}
 
-		// File under next code group either way
+		// Insert at end of list
+		if (_next_tail) {
+			_next_tail->batch_next = p;
+		} else {
+			_next_head = p;
+		}
+		_next_tail = p;
+		p->batch_next = 0;
+
+		// Increment packet count
+		++_next_count;
+	}
+
+	void SetupEncoder() {
+		CAT_ENFORCE(_next_count > 0 && _next_bytes > 0);
+
+		// Byte per data chunk
+		int chunk_size = _next_bytes;
+
+		// NOTE: Blocks are chunks with 2-byte lengths prepended
+		int block_size = 2 + chunk_size;
+
+		// Calculate size of encoded messages
+		u32 message_size = _next_count * block_size;
+
+		// Grow buffer
+		_encode_buffer.resize(message_size);
+
+		// For each sent packet,
+		u8 *buffer = _encode_buffer.get();
+		for (Sent *p = _next_head; p; p = (Sent*)p->batch_next) {
+			u16 size = p->size;
+
+			// Start each block off with the 16-bit size
+			*(u16*)buffer = getLE(size);
+			buffer += 2;
+
+			// Add packet data in
+			memcpy(buffer, p->data, size);
+
+			// Zero the high bytes
+			memset(buffer + size, chunk_size - size);
+
+			// On to the next
+			buffer += chunk_size;
+		}
+
+		// NOTE: After this function call, the input data can be safely modified so long
+		// as Encode() requests come after the original data block count.
+		CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
+
+		// Free packet buffers
+		_allocator.ReleaseBatch(BatchSet(_next_head, _next_tail));
+
+		// Start check symbols right after original data
+		_next_id = _encoder.BlockCount();
 		++_code_group;
+
+		CAT_ENFORCE(_next_id == _next_count);
 	}
 
 	// Send a check symbol
 	void SendCheckSymbol() {
 		const u16 block_count = _encoder.BlockCount();
 
-		CAT_ENFORCE(_check_symbol >= block_count);
+		CAT_ENFORCE(_next_id >= block_count);
 
-		u8 buffer[MAX_PKT_SIZE];
+		u8 *buffer = _packet_buffer.get();
 
 		// Prepend the code group
 		buffer[0] = _code_group;
@@ -526,16 +594,16 @@ class BrookSource {
 		*(u16*)(buffer + 1 + 2) = getLE(block_count);
 
 		// FEC encode
-		u32 bytes = _encoder.Encode(_check_symbol, buffer + PROTOCOL_OVERHEAD);
+		u32 bytes = _encoder.Encode(_next_id, buffer + PROTOCOL_OVERHEAD);
 
 		// Encrypt
-		bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
+		bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, buffer, _packet_buffer.size());
 
 		// Transmit
 		_settings.source->SendData(buffer, bytes);
 
 		// Next check symbol
-		++_check_symbol;
+		_next_id++;
 	}
 
 	// Calculate interval from delay
@@ -582,6 +650,8 @@ class BrookSource {
 public:
 	// On startup:
 	bool Initialize(const u8 key[SKEY_BYTES], const SourceSettings &settings) {
+		Cleanup();
+
 		if (_cipher.Initialize(key, "BROOK", calico::RESPONDER)) {
 			return false;
 		}
@@ -595,7 +665,16 @@ public:
 		_last_tick = 0;
 		_code_group = 0;
 		_input_symbol = 0;
-		_check_symbol = 0;
+		_next_id = 0;
+
+		// Clear next list
+		_next_head = _next_tail = 0;
+
+		// Blocks are prepended with length, which included in encoded part
+		_block_bytes = 2 + _settings.chunk_size;
+
+		// Allocate recovery packet workspace
+		_packet_buffer.resize(BROOK_OVERHEAD + _settings.max_size);
 
 		CAT_OBJCLR(_group_stamps);
 
@@ -609,20 +688,85 @@ public:
 	// a timestamp in milliseconds
 	void Tick(u32 ms) {
 		// If it is time to swap the buffer,
+		bool swap = false;
 		if ((s32)(ms - _swap_trigger) > 0) {
 			_swap_trigger = ms + _swap_interval;
-
-			Swap();
+			swap = true;
 		}
 
 		// Calculate tick interval
 		u32 tick_interval = ms - _last_tick;
+		_last_tick = ms;
 
-		// TODO: When transmitting data, interleave check packets with original data to reduce the impact of burst losses
+		// Calculate symbols to send
+		u32 check_symbols = _check_symbols_per_ms * tick_interval;
+		if (check_symbols > _check_symbols_max) {
+			check_symbols = _check_symbols_max;
+		}
+
+		// Allocate sent packet buffer
+		Sent *p = _allocator.AcquireObject<Sent>();
+
+		// Read from data source
+		int bytes = _settings.source->ReadData(p->data, _settings.max_size);
+		if (bytes > 0) {
+			// Store length
+			CAT_ENFORCE(bytes < 65536);
+			p->size = (u16)bytes;
+
+			// Queue the packet that is being sent, incrementing next count
+			QueueSent(p);
+
+			// Add next code group (this is part of the code group after the next swap)
+			buffer[0] = _code_group + 1;
+
+			// If just swapped,
+			if (_next_count == 0) {
+				// Tag this new group with the start time
+				_group_stamps[_code_group + 1] = ms;
+			} else if (_next_count >= wirehair::CAT_WIREHAIR_MAX_N) {
+				// Force swap early
+				swap = true;
+			}
+
+			// Add check symbol number
+			*(u16*)(buffer + 1) = getLE((u16)(_next_count - 1));
+
+			// If swapping now,
+			if (swap) {
+				swap = false;
+
+				// For final original packet, send the block count to cap it off
+				*(u16*)(buffer + 1 + 2) = (u16)_next_count;
+
+				SetupEncoder();
+			} else {
+				// Set block count to zero for input symbols
+				*(u16*)(buffer + 1 + 2) = 0;
+			}
+
+			// Compose outgoing packet
+			u8 *buffer = _packet_buffer.get();
+
+			// Copy data part
+			memcpy(buffer + PROTOCOL_OVERHEAD, p->data, bytes);
+
+			// Encrypt
+			bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, buffer, _packet_buffer.size());
+
+			// Transmit
+			_settings.source->SendData(buffer, bytes);
+
+			// Send next check symbol
+			if (check_symbols > 0) {
+				SendCheckSymbol();
+				--check_symbols;
+			}
+		}
+
+		// TODO
 
 		// Read data in chunks
-		u8 buffer[MAX_PKT_SIZE];
-		u8 *data = buffer + PROTOCOL_OVERHEAD;
 		int bytes;
 		while ((bytes = _settings.source->ReadData(data, _settings.chunk_size))) {
 			// NOTE: For now, require that the data returned is exactly the size requested.
@@ -657,21 +801,19 @@ public:
 
 			// Next input symbol id
 			++_input_symbol;
-		}
 
-		if (_has_symbols) {
-			// Calculate number of check symbols to send based on rate
-			u32 check_symbols = _check_symbols_per_ms * tick_interval;
-			if (check_symbols > _check_symbols_max) {
-				check_symbols = _check_symbols_max;
-			}
-
-			for (int ii = 0; ii < check_symbols; ++ii) {
+			// Send next check symbol
+			if (check_symbols > 0) {
 				SendCheckSymbol();
+				--check_symbols;
 			}
 		}
 
-		_last_tick = ms;
+		// Send remaining check symbols
+		while (check_symbols > 0) {
+			SendCheckSymbol();
+			--check_symbols;
+		}
 	}
 
 	// On packet received
@@ -704,7 +846,6 @@ public:
 class IDataSink {
 public:
 	// Called with the latest data block from remote host
-	// Called with null to indicate that data could not be recovered for this block
 	virtual void OnPacket(void *packet) = 0;
 
 	// Data to send to remote host
@@ -713,8 +854,9 @@ public:
 
 
 struct SinkSettings {
-	int chunk_size;
-	IDataSink *sink;
+	int chunk_size;		// Size of data chunks in bytes
+	int group_time;		// Milliseconds that each code group will last
+	IDataSink *sink;	// Interface
 };
 
 
@@ -722,7 +864,7 @@ struct Packet : BatchHead {
 	// Block ID for this packet
 	u32 id;
 
-	// Data follows (settings.chunk_size bytes)
+	// Data follows
 	u8 data[1];
 };
 
@@ -733,6 +875,9 @@ struct CodeGroup {
 
 	// Is code group completely passed?
 	bool done;
+
+	// Timestamp on first packet for this group
+	u32 open_time;
 
 	// Largest ID seen for each code group, for decoding the ID
 	u32 largest_id;
@@ -753,8 +898,10 @@ struct CodeGroup {
 	// Recovery symbols
 	Packet *recovery_head, *recovery_tail;
 
-	void Open() {
+	void Open(u32 ms) {
 		open = true;
+		open_time = ms;
+
 		done = false;
 		largest_id = 0;
 		block_count = 0;
@@ -877,6 +1024,8 @@ struct CodeGroup {
 };
 
 
+// TODO: Add startup mode where we accept any code group as the first one
+
 class BrookSink {
 	SinkSettings _settings;
 
@@ -892,6 +1041,9 @@ class BrookSink {
 	// Will be passed directly to IDataSink when received
 	u8 _next_group;
 	u32 _next_id;
+
+	// Timestamp after which the group has expired and we give up and move on
+	u32 _group_timeout;
 
 	// Statistics since the last pong
 	u32 _seen, _count;
@@ -938,18 +1090,38 @@ class BrookSink {
 	void FinishGroup(Group *group) {
 		CAT_DEBUG_ENFORCE(group == &_groups[_next_group]);
 
-		// Close off this group and start the next.
-		// The relative group will now be -1 = 255,
-		// so further packets for this group will be
-		// dropped until the group id rolls back around.
-		group->Close(_allocator);
+		for (;;) {
+			// If group was open,
+			if (group->open) {
+				// Close off this group.
+				group->Close(_allocator);
+			}
 
-		// Decoder is now inactive
-		_decoding = false;
+			// Decoder is now inactive
+			_decoding = false;
 
-		// Set next expected (group, id)
-		_next_group++;
-		_next_id = 0;
+			// Set next expected (group, id)
+			_next_group++;
+			_next_id = 0;
+
+			// The relative group will now be -1 = 255,
+			// so further packets for this group will be
+			// dropped until the group id rolls back around.
+
+			// Pass as many from the next group as we can now
+			group = &_group[_next_group];
+
+			// If not finished another group immediately,
+			if (!ProcessOOS(group)) {
+				// If group is not recoverable now,
+				if (!group->CanRecover() || !AttemptRecovery(group)) {
+					break;
+				}
+
+				// Recover and pass all the packets
+				RecoverGroup(group);
+			}
+		}
 	}
 
 	// Returns true if code group was finished, so packet can be discarded
@@ -1008,6 +1180,57 @@ class BrookSink {
 		FreePacket(p);
 	}
 
+	// Returns true if recovery succeeded
+	bool AttemptRecovery(CodeGroup *group, Packet *p = 0) {
+		wirehair::Result r;
+
+		// If not decoding yet,
+		if (!_decoding) {
+			r = _decoder.InitializeDecoder(block_count * _settings.chunk_size, _settings.chunk_size);
+
+			// We should always initialize correctly
+			CAT_ENFORCE(!r && _decoder.BlockCount() == block_count);
+
+			// Decoding process has started
+			_decoding = true;
+
+			// Add passed packets
+			for (Packet *op = group->passed_head; op; op = (Packet*)op->batch_next) {
+				r = _decoder.DecodeFeed(op->id, op->data);
+				if (!r) {
+					return true;
+				}
+			}
+
+			// Add OOS packets
+			for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
+				r = _decoder.DecodeFeed(op->id, op->data);
+				if (!r) {
+					return true;
+				}
+			}
+
+			// Add Recovery packets
+			for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
+				r = _decoder.DecodeFeed(op->id, op->data);
+				if (!r) {
+					return true;
+				}
+			}
+		} else if (p) {
+			// Feed the latest packet
+			r = _decoder.DecodeFeed(p->id, p->data);
+			if (!r) {
+				return true;
+			}
+		} else {
+			// Cannot recover without any new data
+			return false;
+		}
+
+		return false;
+	}
+
 public:
 	// On startup:
 	bool Initialize(const u8 key[SKEY_BYTES], const SinkSettings &settings) {
@@ -1022,6 +1245,8 @@ public:
 		// Expect (0, 0) first
 		_next_group = _next_id = 0;
 
+		_group_timeout = 0;
+
 		// Initialize the packet allocator
 		_allocator.Initialize(sizeof(Packet)-1 + _settings.chunk_size);
 
@@ -1029,13 +1254,44 @@ public:
 		CAT_OBJCLR(_groups);
 	}
 
+	// On tick 
+	void Tick(u32 ms) {
+		CodeGroup *group = &_groups[_next_group];
+
+		// Periodically check for a code group timeout:
+
+		// If active group has expired,
+		if (ms > _group_timeout) {
+			// Deliver any packets we did receive:
+
+			// If group is open,
+			if (group->open) {
+				// For each packet in order,
+				for (Packet *p = group->oos_head; p; p = (Packet*)p->batch_next) {
+					// Pass packet along
+					_settings.sink->OnPacket(p->data);
+				}
+
+				// Finish this group and move on to the next one
+				FinishGroup(group);
+
+				// Grab next group
+				group = _groups[_next_group];
+
+				_group_timeout = group->open_time + _settings.group_time * 2;
+			}
+		}
+	}
+
 	// On packet received
-	void Recv(u8 *pkt, int len) {
+	void Recv(u32 ms, u8 *pkt, int len) {
 		u64 iv;
 		len = _cipher.Decrypt(pkt, len, iv);
 
+		// TODO: Encode data with length prepended.
+
 		// If packet contains data,
-		if (len == PROTOCOL_OVERHEAD + _settings.chunk_size) {
+		if (len > PROTOCOL_OVERHEAD) {
 			// Read packet data
 			u8 code_group = pkt[0];
 
@@ -1072,7 +1328,7 @@ public:
 			// If group is not open yet,
 			if (!group->open) {
 				// Open group
-				group->Open();
+				group->Open(ms);
 			}
 
 			// If ID is the largest seen so far,
@@ -1135,49 +1391,19 @@ public:
 
 			// If waiting for this group and recovery is possible,
 			if (code_group == _next_group && group->CanRecover()) {
-				wirehair::Result r;
-
-				// If not decoding yet,
-				if (!_decoding) {
-					r = _decoder.InitializeDecoder(block_count * _settings.chunk_size, _settings.chunk_size);
-
-					// We should always initialize correctly
-					CAT_ENFORCE(!r && _decoder.BlockCount() == block_count);
-
-					// Decoding process has started
-					_decoding = true;
-
-					// Add passed packets
-					for (Packet *op = group->passed_head; op; op = (Packet*)op->batch_next) {
-						r = _decoder.DecodeFeed(op->id, op->data);
-					}
-
-					// Add OOS packets
-					for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
-						r = _decoder.DecodeFeed(op->id, op->data);
-					}
-
-					// Add Recovery packets
-					for (Packet *op = group->oos_head; op; op = (Packet*)op->batch_next) {
-						r = _decoder.DecodeFeed(op->id, op->data);
-					}
-				} else {
-					// Feed the latest packet
-					r = _decoder.DecodeFeed(p->id, p->data);
-				}
-
-				// If recovery was successful,
-				if (!r) {
+				if (AttemptRecovery(group, p)) {
 					// Recover and pass all the packets
 					RecoverGroup(group);
 
 					// Finish off this group
 					FinishGroup(group);
+
+					// Stop here
+					return;
 				}
 			}
 
 			// TODO: Implement IV-based packet-loss estimator
-			// TODO: Implement decoder time-based buffering
 		}
 	}
 };
