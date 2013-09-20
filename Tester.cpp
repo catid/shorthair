@@ -954,8 +954,6 @@ class BrookSink {
 
 	// Returns true if code group was finished, so packet can be discarded
 	bool ProcessOOS(CodeGroup *group) {
-		bool finished = false;
-
 		// O(1) Check OOS
 		Packet *oos = group->oos_head;
 		while (oos && oos->id == _next_id) {
@@ -967,9 +965,7 @@ class BrookSink {
 
 			// If just finished the group,
 			if (block_count && _next_id >= group->block_count) {
-				finished = true;
-
-				// TODO: Continue looping on the next group
+				return true;
 			}
 
 			// Store next in oos list
@@ -985,7 +981,31 @@ class BrookSink {
 			oos = next;
 		}
 
-		return finished;
+		return false;
+	}
+
+	// Recover the remaining blocks for a code group and pass them on
+	void RecoverGroup(CodeGroup *group) {
+		// Acquire some memory temporarily to store the recovered block
+		Packet *p = _allocator.AcquireObject<Packet>();
+
+		do {
+			// Reconstruct the block for the next expected ID
+			_decoder.ReconstructBlock(_next_id, p->data);
+
+			// Pass along queued data
+			_settings.sink->OnPacket(p->data);
+
+			// Increment ID
+			_next_id++;
+
+			// Process OOS original data until we get stuck again or finish
+		while (!ProcessOOS(group));
+
+		// NOTE: Message is now completely delivered
+
+		// Free temporary memory
+		FreePacket(p);
 	}
 
 public:
@@ -1014,8 +1034,8 @@ public:
 		u64 iv;
 		len = _cipher.Decrypt(pkt, len, iv);
 
-		// If packet may be valid,
-		if (len > PROTOCOL_OVERHEAD) {
+		// If packet contains data,
+		if (len == PROTOCOL_OVERHEAD + _settings.chunk_size) {
 			// Read packet data
 			u8 code_group = pkt[0];
 
@@ -1148,8 +1168,11 @@ public:
 
 				// If recovery was successful,
 				if (!r) {
-					// TODO: Split recovery loop off into a function
-					r = _decoder.ReconstructBlock(_next_id, data);
+					// Recover and pass all the packets
+					RecoverGroup(group);
+
+					// Finish off this group
+					FinishGroup(group);
 				}
 			}
 
