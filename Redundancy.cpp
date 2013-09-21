@@ -43,7 +43,7 @@ using namespace cat;
  * X is approximated by Y ~ N(mu, sigma)
  * where mu = E[X], sigma = SD(X).
  *
- * And: P(X > r) ~= P(Y >= r - 0.5)
+ * And: P(X > r) ~= P(Y >= r + 0.5)
  *
  * For this to be somewhat accurate, np >= 10 and n(1-p) >= 10.
  *
@@ -85,8 +85,14 @@ int CalculateApproximate(double p, int n, double Qtarget) {
 		q = NormalApproximation(n, r, p);
 	} while (q > Qtarget);
 
+	++r;
+
 	// Add one extra symbol to fix error of approximation
-	return r + 1;
+	if (n * p < 10. || n * (1 - p) < 10.) {
+		++r;
+	}
+
+	return r;
 }
 
 /*
@@ -506,10 +512,10 @@ int CalculateExact(double p, int n, double Pr, double Qtarget) {
 	return r;
 }
 
-int CalculateRedundancy(double p, int n, double Qtarget) {
+int CalculateRedundancy(double p, int n, double Qtarget, bool force_approx = false) {
 	// If in region where approximation works,
-	if (n * p >= 10. &&
-		n * (1 - p) >= 10.) {
+	if ((n * p >= 10. &&
+		n * (1 - p) >= 10.) || force_approx) {
 		return CalculateApproximate(p, n, Qtarget);
 	} else {
 		return CalculateExact(p, n, 0.97, Qtarget);
@@ -541,7 +547,8 @@ int main() {
 	double Qtarget = 0.000001;
 
 	for (int n = 1; n < 1000; ++n) {
-		cout << "r = " << CalculateRedundancy(p, n, Qtarget) << endl;
+		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget) << endl;
+		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget, true) << endl;
 	}
 }
 
