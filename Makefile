@@ -17,6 +17,7 @@ shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseA
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
 tester_o = Tester.o $(wirehair_o) $(calico_o) $(shared_o)
+redundancy_o = Redundancy.o $(shared_o)
 
 
 # Release target (default)
@@ -41,6 +42,19 @@ brook : $(tester_o)
 
 Tester.o : Tester.cpp
 	$(CCPP) $(CPFLAGS) -c Tester.cpp
+
+
+# redundancy executable
+
+redtest : CFLAGS += $(DBGFLAGS)
+redtest : $(redundancy_o)
+	$(CCPP) -o redtest $(redundancy_o)
+
+
+# redundancy objects
+
+Redundancy.o : Redundancy.cpp
+	$(CCPP) $(CPFLAGS) -c Redundancy.cpp
 
 
 # Shared objects

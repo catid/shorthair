@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cmath>
+#include <vector>
 using namespace std;
 
 #include "Platform.hpp"
@@ -56,7 +57,7 @@ using namespace cat;
  *
  * q = 1 - p(0) - sum( p(l) * (n+r, l) - p(l) * (n+r, l) * (1 - Pr) ^ (1 + r - l) ; l = 1..r )
  *
- * q = 1 - sum( p^l * (1-p)^(n+r-l) * (n+r, l) * (1 - (1-Pr) ^ (1+r-l)) ; l = r..1 ) - (1-p)^(n+r)
+ * q = 1 - sum( p^l * (1-p)^(n+r-l) * (n+r, l) * (1 - (1-Pr) ^ (1+r-l)) ; l = 1..r ) - (1-p)^(n+r)
  *            (term1)    (term2)      (term3)         (term4)                           (term5)
  *
  * Computing from l = r..1 is more efficient since the exponentiations can be
@@ -353,87 +354,108 @@ double LogFactorial(int n) {
 	return (x - 0.5) * log(x) - x + LOG2PI + 1. / (12. * x);
 }
 
-int CalculateMinimumRedundancy(double p, int r, double Pr, double Qtarget) {
+int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
 	// Repeated from above:
-	// q = 1 - sum( p^l * (1-p)^(n+r-l) * (n+r, l) * (1 - (1-Pr) ^ (1+r-l)) ; l = r..1 ) - (1-p)^(n+r)
+	// q = 1 - sum( p^l * (1-p)^(n+r-l) * (n+r, l) * (1 - (1-Pr) ^ (1+r-l)) ; l = 1..r ) - (1-p)^(n+r)
 	//            (term1)    (term2)      (term3)         (term4)                           (term5)
 
 	// Calculate complement of p: Probability of receiving a packet
 	double pc = 1. - p;
 
-	// Precompute (1-p)^n and reuse it for each value of r we try.
-	double pcn = pc;
-	for (int i = 1; i < n; ++i) {
-		pcn *= pc;
-	}
+	cout << "p' = " << pc << endl;
 
 	// Calculate complement of Pr: Probability of decoding with n/n random blocks
 	double Prc = 1. - Pr;
 
+	cout << "Pr' = " << Prc << endl;
+
 	// Stored results
-	vector<double> term1;	// [i] = p ^ i
-	vector<double> term2;	// [i] = (1-p) ^ (n + i)
 	vector<double> lfl;		// [i] = log i!
 
+	// p ^ l
+	double pel = p;
+	vector<double> term1;	// [i] = p ^ i
+	term1.push_back(1.);	// p ^ 0 = 1
+
+	// (1 - p) ^ n ^ (r - l)
+	double pcn = pc;
+	for (int i = 1; i < n; ++i) {
+		pcn *= pc;
+	}
+	vector<double> term2;	// [i] = (1-p) ^ (n + i), i = r - l
+	term2.push_back(pcn);	// (1-p) ^ (n + 0)
+
+	cout << "p ^ n = " << pcn << endl;
+
+	// term3: log l! part
+	vector<double> term3;
+	term3.push_back(0);
+
+	// (1 - Pr) ^ (1 + r-l)
+	double prn = Prc;
+	vector<double> term4;
+	term4.push_back(prn);	// (1 - Pr) ^ (1 + 0) = 1 - Pr
+
 	// For each value of r,
-	for (int r = 1; ; ++r) {
+	int r = 0;
+	double q;
+	do {
+		++r;
+
+		cout << "Trying r = " << r << endl;
+
 		// Number of total packets, including original and recovery packets
 		const int m = n + r;
 
-		double q = 1.;
+		// Populate term1
+		term1.push_back(pel);
+		pel *= p;
 
-		// TODO: Fill in term1, term2, lfl tables as r increases
-			// Calculate log l!
-			double lfl = LogFactorial(l);
+		// Populate term2
+		pcn *= pc;
+		term2.push_back(pcn);
 
+		// Populate term3
+		term3.push_back(LogFactorial(r));
+
+		// Populate term4
+		prn *= Prc;
+		term4.push_back(prn);
+
+		q = 1.;
 
 		// Calculate log m!
 		double lfm = LogFactorial(m);
 
-		// Unroll l = r:
-
-		// (1 - Pr) ^ (1 + r - l)
-		double Prcel = Prc;
-
 		// For each l,
-		for (int l = r - 1; l > 0; --l) {
+		for (int l = 1; l <= r; ++l) {
 			// Calculate log (n+r-l)!
 			double lfml = LogFactorial(m - l);
 
 			// Calculate term3: (n+r, l)
-			double term3 = lfm - lfl - lfml;
+			double ncr = exp(lfm - term3[l] - lfml);
+
+			q -= term1[l] * term2[r - l] * ncr * (1 - term4[r - l]);
 		}
 
-		double pel = p; // p^l
+		// term5
+		q -= term2[r];
 
-		// Sum up partial probabilities: Code non-ideality
-		for (int l = 1; l <= r; ++l) {
-			// 
-			double pcen;
+		cout << "Test: " << q << endl;
 
-			CAT_ENFORCE(m >= l);
+	} while (q >= Qtarget);
 
-			if (m == l) {
-				pcen = 1.;
-			} else {
-				pcen = pc;
-				// TODO: Eliminate this
-				for (int i = 1, len = m - l; i < len; ++i) {
-					pcen *= pc;
-				}
-			}
-
-
-
-			pel * pcen
-
-			// Set up for next loop
-			pel *= p;
-		}
-	}
+	return r;
 }
 
 int main() {
 	cout << "Redundancy Calculator" << endl;
+
+	double p = 0.02;
+	int n = 1000;
+	double Pr = 0.97;
+	double Qtarget = 0.001;
+
+	cout << "r = " << CalculateMinimumRedundancy(p, n, Pr, Qtarget) << endl;
 }
 
