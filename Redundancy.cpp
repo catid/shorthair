@@ -5,10 +5,12 @@ using namespace std;
 
 #include "Platform.hpp"
 #include "Enforcer.hpp"
+#include "BitMath.hpp"
 using namespace cat;
 
-
 /*
+ * Top Level: Calculating Redundancy Required
+ *
  * Assuming that the code group size is large enough to eat burst losses, then
  * the loss probability distribution is roughly uniform with probability of loss
  * equal to p.
@@ -26,7 +28,66 @@ using namespace cat;
  *
  * Perceived loss q = sum( p(l) * (n+r, l) ; l = r+1..n+r ), which is the
  * probability of losing r+1 or more packets.
+ *
+ * Note this is a Bernoulli random variable, which makes it amenable to
+ * approximation via the CLT.
  */
+
+/*
+ * Normal Approximation
+ *
+ * P(X > r), X ~ B(n+r, p)
+ *
+ * Recall: E[X] = (n+r)*p, SD(X) = sqrt((n+r)*p*(1-p))
+ *
+ * X is approximated by Y ~ N(mu, sigma)
+ * where mu = E[X], sigma = SD(X).
+ *
+ * And: P(X > r) ~= P(Y >= r - 0.5)
+ *
+ * For this to be somewhat accurate, np >= 10 and n(1-p) >= 10.
+ *
+ * This is a problem since we also want to solve it exactly for all
+ * cases.  So when the approximation breaks down, we evaluate the
+ * Bernoulli CDF directly (see later section).
+ */
+
+#define INVSQRT2 0.70710678118655
+
+// Precondition: r > 0
+// Returns probability of loss for given configuration
+double NormalApproximation(int n, int r, double p) {
+	const int m = n + r;
+
+	double u = m * p;
+	double s = sqrt(u * (1. - p));
+
+	return 0.5 * erfc(INVSQRT2 * (r - u - 0.5) / s);
+}
+
+/*
+ * Normal Approximation Approach
+ *
+ * Try different values of r until target is reached.
+ *
+ * NOTE: Pr is not used here (see below) since its effects
+ * are not particularly important where this approximation
+ * is used.
+ */
+
+int CalculateApproximate(double p, int n, double Qtarget) {
+	// TODO: Skip values of r to speed this up
+	int r = 0;
+	double q;
+
+	do {
+		++r;
+		q = NormalApproximation(n, r, p);
+	} while (q > Qtarget);
+
+	// Add one extra symbol to fix error of approximation
+	return r + 1;
+}
 
 /*
  * Incorporating the non-ideality of the code:
@@ -40,7 +101,7 @@ using namespace cat;
  */
 
 /*
- * Solving the equations
+ * Solving the equations exactly
  *
  * We want to solve the above equation for r with a given {p, Pr, n, Qtarget}
  * so that q < Qtarget.
@@ -48,8 +109,8 @@ using namespace cat;
  * The equations are not amenable to logarithmic inversion, so a numerical
  * approach is taken.
  *
- * The binomial formula implies that the first sum from 0..n+r is equal to 1,
- * and computing q with the complement is more efficient:
+ * The binomial formula verifies that the first sum from 0..n+r is equal to 1,
+ * and computing q with the complement is more efficient with fewer terms:
  *
  * q = 1 - sum( p(l) * (n+r, l) ; l = 0..r ) + sum(...)
  *
@@ -63,9 +124,9 @@ using namespace cat;
  * Computing from l = r..1 is more efficient since the exponentiations can be
  * built up iteratively.
  *
- * term1: computed in a table and then reverse-indexed, reused
+ * term1: computed in a table and then reverse-indexed, reused.
  * term2: computed iteratively for each l from the previous one after (1-p)^n is precomputed.
- * term3: computed via logarithm
+ * term3: computed via logarithm.
  * term4: computed iteratively for each l from the previous one.
  * term5: same as term2.
  *
@@ -354,7 +415,7 @@ double LogFactorial(int n) {
 	return (x - 0.5) * log(x) - x + LOG2PI + 1. / (12. * x);
 }
 
-int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
+int CalculateExact(double p, int n, double Pr, double Qtarget) {
 	// Repeated from above:
 	// q = 1 - sum( p^l * (1-p)^(n+r-l) * (n+r, l) * (1 - (1-Pr) ^ (1+r-l)) ; l = 1..r ) - (1-p)^(n+r)
 	//            (term1)    (term2)      (term3)         (term4)                           (term5)
@@ -362,12 +423,8 @@ int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
 	// Calculate complement of p: Probability of receiving a packet
 	double pc = 1. - p;
 
-	cout << "p' = " << pc << endl;
-
 	// Calculate complement of Pr: Probability of decoding with n/n random blocks
 	double Prc = 1. - Pr;
-
-	cout << "Pr' = " << Prc << endl;
 
 	// Stored results
 	vector<double> lfl;		// [i] = log i!
@@ -377,15 +434,20 @@ int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
 	vector<double> term1;	// [i] = p ^ i
 	term1.push_back(1.);	// p ^ 0 = 1
 
-	// (1 - p) ^ n ^ (r - l)
-	double pcn = pc;
-	for (int i = 1; i < n; ++i) {
-		pcn *= pc;
+	// Compute (1 - p) ^ n using square-and-multiply optimization
+	double pcn = 1.;
+	int msb = 1 << BSR32(n);
+	while (msb) {
+		pcn *= pcn;
+		if (n & msb) {
+			pcn *= pc;
+		}
+		msb >>= 1;
 	}
+
+	// (1 - p) ^ n ^ (r - l)
 	vector<double> term2;	// [i] = (1-p) ^ (n + i), i = r - l
 	term2.push_back(pcn);	// (1-p) ^ (n + 0)
-
-	cout << "p ^ n = " << pcn << endl;
 
 	// term3: log l! part
 	vector<double> term3;
@@ -401,8 +463,6 @@ int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
 	double q;
 	do {
 		++r;
-
-		cout << "Trying r = " << r << endl;
 
 		// Number of total packets, including original and recovery packets
 		const int m = n + r;
@@ -435,27 +495,53 @@ int CalculateMinimumRedundancy(double p, int n, double Pr, double Qtarget) {
 			// Calculate term3: (n+r, l)
 			double ncr = exp(lfm - term3[l] - lfml);
 
+			// Remove term
 			q -= term1[l] * term2[r - l] * ncr * (1 - term4[r - l]);
 		}
 
 		// term5
 		q -= term2[r];
-
-		cout << "Test: " << q << endl;
-
 	} while (q >= Qtarget);
 
 	return r;
 }
 
+int CalculateRedundancy(double p, int n, double Qtarget) {
+	// If in region where approximation works,
+	if (n * p >= 10. &&
+		n * (1 - p) >= 10.) {
+		return CalculateApproximate(p, n, Qtarget);
+	} else {
+		return CalculateExact(p, n, 0.97, Qtarget);
+	}
+}
+
+/*
+ * Discussion:
+ *
+ * The approximation seems to work fairly well even outside of
+ * the "safe" region.  It only seems to be off by 1 at most for
+ * normal data.
+ *
+ * The amount of overhead required appears to go up slower than
+ * the block count (N).  This means that larger buffer sizes are
+ * more efficient with bandwidth than overlapped encoders,
+ * on top of being more compressible.
+ *
+ * Reducing the target error rate by an order of magnitude takes
+ * just a small amount of additional redundancy, so targetting
+ * very very low error rates may be a good idea.
+ */
+
 int main() {
 	cout << "Redundancy Calculator" << endl;
 
-	double p = 0.02;
-	int n = 1000;
-	double Pr = 0.97;
-	double Qtarget = 0.001;
+	double p = 0.03;
+	int n = 5;
+	double Qtarget = 0.000001;
 
-	cout << "r = " << CalculateMinimumRedundancy(p, n, Pr, Qtarget) << endl;
+	for (int n = 1; n < 1000; ++n) {
+		cout << "r = " << CalculateRedundancy(p, n, Qtarget) << endl;
+	}
 }
 
