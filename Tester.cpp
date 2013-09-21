@@ -704,18 +704,26 @@ public:
 			check_symbols = _check_symbols_max;
 		}
 
-		// Allocate sent packet buffer
-		Sent *p = _allocator.AcquireObject<Sent>();
+		for (;;) {
+			// Allocate sent packet buffer
+			Sent *p = _allocator.AcquireObject<Sent>();
 
-		// Read from data source
-		int bytes = _settings.source->ReadData(p->data, _settings.max_size);
-		if (bytes > 0) {
+			// Read from data source
+			int bytes = _settings.source->ReadData(p->data, _settings.max_size);
+			if (bytes <= 0) {
+				_allocator.Release(p);
+				break;
+			}
+
 			// Store length
 			CAT_ENFORCE(bytes < 65536);
 			p->size = (u16)bytes;
 
 			// Queue the packet that is being sent, incrementing next count
 			QueueSent(p);
+
+			// Compose outgoing packet
+			u8 *buffer = _packet_buffer.get();
 
 			// Add next code group (this is part of the code group after the next swap)
 			buffer[0] = _code_group + 1;
@@ -732,21 +740,11 @@ public:
 			// Add check symbol number
 			*(u16*)(buffer + 1) = getLE((u16)(_next_count - 1));
 
-			// If swapping now,
-			if (swap) {
-				swap = false;
-
-				// For final original packet, send the block count to cap it off
-				*(u16*)(buffer + 1 + 2) = (u16)_next_count;
-
-				SetupEncoder();
-			} else {
-				// Set block count to zero for input symbols
-				*(u16*)(buffer + 1 + 2) = 0;
-			}
-
-			// Compose outgoing packet
-			u8 *buffer = _packet_buffer.get();
+			// For original data send the current block count, which will
+			// always be one ahead of the block ID.
+			// NOTE: This allows the decoder to know when it has received
+			// all the packets in a code group for the zero-loss case.
+			*(u16*)(buffer + 1 + 2) = (u16)_next_count;
 
 			// Copy data part
 			memcpy(buffer + PROTOCOL_OVERHEAD, p->data, bytes);
@@ -756,6 +754,13 @@ public:
 
 			// Transmit
 			_settings.source->SendData(buffer, bytes);
+
+			// If swapping now,
+			if (swap) {
+				swap = false;
+
+				SetupEncoder();
+			}
 
 			// Send next check symbol
 			if (check_symbols > 0) {
