@@ -10,6 +10,7 @@ OPTFLAGS = -O4
 DBGFLAGS = -g -O0 -DDEBUG
 CFLAGS = -Wall -fstrict-aliasing -I ./shared
 CPFLAGS = $(CFLAGS)
+LIBS = -pthread
 
 
 # Multi-threaded version avoids large latency spikes in encoder/decoder processing
@@ -39,7 +40,7 @@ debug : brook
 # brook executable
 
 brook : $(tester_o)
-	$(CCPP) -o brook $(tester_o)
+	$(CCPP) $(LIBS) -o brook $(tester_o)
 
 
 # brook objects
