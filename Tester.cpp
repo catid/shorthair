@@ -7,6 +7,9 @@
 #include "ReuseAllocator.hpp"
 #include "BitMath.hpp"
 #include "SmartArray.hpp"
+#include "Thread.hpp"
+#include "WaitableFlag.hpp"
+#include "Mutex.hpp"
 using namespace cat;
 
 #include <vector>
@@ -454,7 +457,6 @@ public:
 
 
 
-
 struct SourceSettings {
 	float min_loss;				// [0..1] packetloss probability lower limit
 	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
@@ -472,12 +474,171 @@ struct Sent : BatchHead {
 };
 
 
+/*
+ * Run the encoder in a separate thread to avoid adding latency spikes
+ * to the original data packet stream.
+ */
+class EncoderThread : public Thread {
+protected: // Shared data:
+	bool _initialized;
+	volatile bool _kill;
+	WaitableFlag _wake;
+
+	// Workspace to accumulate sent packets
+	Sent *_sent_head, *_sent_tail;
+	int _block_count;	// Number of blocks 
+	int _largest;		// Number of bytes max, excluding 2 byte implied length field
+
+	// Next block id to produce
+	u32 _next_block_id;
+
+	Mutex _lock;
+
+	// Encoder is ready to produce symbols?
+	bool _encoder_ready;
+
+	// Code group size
+	int _group_largest, _group_count;
+
+	// Fixed code group list
+	Sent *_group_head, *_group_tail;
+
+private: // Thread-Private data:
+	wirehair::Encoder _encoder;
+
+	// Size of block for this group
+	int _group_block_size;
+
+	// Large message buffer for code group
+	SmartArray<u8> _encode_buffer;
+
+	virtual bool Entrypoint(void *param) {
+		while (!_kill) {
+			_wake.Wait();
+			if (!_kill) {
+				Process();
+			}
+		}
+	}
+
+	void Initialize() {
+		_kill = false;
+		StartThread();
+	}
+
+	void Process() {
+		// Byte per data chunk
+		int chunk_size = _group_largest;
+		int block_count = _group_count;
+
+		CAT_ENFORCE(block_count > 0 && chunk_size > 0);
+
+		// NOTE: Blocks are chunks with 2-byte lengths prepended
+		int block_size = 2 + chunk_size;
+
+		// Calculate size of encoded messages
+		u32 message_size = block_count * block_size;
+
+		// Grow buffer
+		_encode_buffer.resize(message_size);
+
+		// For each sent packet,
+		u8 *buffer = _encode_buffer.get();
+		for (Sent *p = _group_head; p; p = (Sent*)p->batch_next) {
+			u16 size = p->size;
+
+			// Start each block off with the 16-bit size
+			*(u16*)buffer = getLE(size);
+			buffer += 2;
+
+			// Add packet data in
+			memcpy(buffer, p->data, size);
+
+			// Zero the high bytes
+			memset(buffer + size, chunk_size - size);
+
+			// On to the next
+			buffer += chunk_size;
+		}
+
+		// NOTE: After this function call, the input data can be safely modified so long
+		// as Encode() requests come after the original data block count.
+		CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
+
+		_next_block_id = block_count;
+
+		CAT_FENCE_COMPILER;
+
+		_encoder_ready = true;
+	}
+
+public:
+	CAT_INLINE EncoderThread() {
+		_initialized = false;
+	}
+	CAT_INLINE virtual ~EncoderThread() {
+		Shutdown();
+	}
+
+	void Shutdown() {
+		if (_initialized) {
+			_kill = true;
+			_wake.Set();
+			WaitForThread();
+			_initialized = false;
+		}
+	}
+
+	void QueueSent(Sent *p) {
+		// If this new packet is larger than the previous ones,
+		if (_largest < p->size) {
+			// Remember the largest size for when we start emitting check symbols
+			_largest = p->size;
+		}
+
+		// Insert at end of list
+		if (_next_tail) {
+			_next_tail->batch_next = p;
+		} else {
+			_next_head = p;
+		}
+		_next_tail = p;
+		p->batch_next = 0;
+
+		++_block_count;
+	}
+
+	void EncodeQueued() {
+		if (!_initialized) {
+			_initialized = true;
+			Initialize();
+		}
+
+		AutoLock lock(_lock);
+
+		_block_bytes = block_bytes;
+
+		// TODO: Put this somewhere
+		// Free packet buffers
+		_allocator.ReleaseBatch(BatchSet(_group_head, _group_tail));
+	}
+
+	bool GenerateRecoveryBlock(void *block, u32 block_bytes) {
+		return false;
+
+		CAT_ENFORCE(_block_bytes == block_bytes);
+
+		CAT_ENFORCE(_block_bytes == _encoder.Encode(_next_block_id++, block));
+
+		return true;
+	}
+};
+
+
 class BrookSource {
 	SourceSettings _settings;
 
 	calico::Calico _cipher;
-
-	wirehair::Encoder _encoder;
 
 	// Bytes per wirehair block
 	int _block_bytes;
@@ -499,9 +660,6 @@ class BrookSource {
 	// Swap times for each code group for RTT calculation
 	u32 _group_stamps[256];
 
-	// Padded outgoing packet buffer for encoder
-	SmartArray<u8> _encode_buffer;
-
 	// Packet workspace buffer
 	SmartArray<u8> _packet_buffer;
 
@@ -511,80 +669,10 @@ class BrookSource {
 	// Next time to trigger a swap
 	u32 _swap_trigger;
 
-	// Next group packet queue
-	Packet *_next_head, *_next_tail;
-	int _next_count;	// Number of packets
-	int _next_bytes;	// Number of bytes max, excluding 2 byte implied length field
-
 	// Next symbol ID or 0 for uninitialized state
 	u32 _next_id;
 
-	void QueueSent(Sent *p) {
-		// If this new packet is larger than the previous ones,
-		if (_next_bytes < p->size) {
-			// Remember the largest size for when we start emitting check symbols
-			_next_bytes = p->size;
-		}
-
-		// Insert at end of list
-		if (_next_tail) {
-			_next_tail->batch_next = p;
-		} else {
-			_next_head = p;
-		}
-		_next_tail = p;
-		p->batch_next = 0;
-
-		// Increment packet count
-		++_next_count;
-	}
-
 	void SetupEncoder() {
-		CAT_ENFORCE(_next_count > 0 && _next_bytes > 0);
-
-		// Byte per data chunk
-		int chunk_size = _next_bytes;
-
-		// NOTE: Blocks are chunks with 2-byte lengths prepended
-		int block_size = 2 + chunk_size;
-
-		// Calculate size of encoded messages
-		u32 message_size = _next_count * block_size;
-
-		// Grow buffer
-		_encode_buffer.resize(message_size);
-
-		// For each sent packet,
-		u8 *buffer = _encode_buffer.get();
-		for (Sent *p = _next_head; p; p = (Sent*)p->batch_next) {
-			u16 size = p->size;
-
-			// Start each block off with the 16-bit size
-			*(u16*)buffer = getLE(size);
-			buffer += 2;
-
-			// Add packet data in
-			memcpy(buffer, p->data, size);
-
-			// Zero the high bytes
-			memset(buffer + size, chunk_size - size);
-
-			// On to the next
-			buffer += chunk_size;
-		}
-
-		// NOTE: After this function call, the input data can be safely modified so long
-		// as Encode() requests come after the original data block count.
-		CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
-
-		// Free packet buffers
-		_allocator.ReleaseBatch(BatchSet(_next_head, _next_tail));
-
-		// Start check symbols right after original data
-		_next_id = _encoder.BlockCount();
-		++_code_group;
-
-		CAT_ENFORCE(_next_id == _next_count);
 	}
 
 	// Send a check symbol

@@ -55,9 +55,9 @@ u32 GetThreadID();
 
 
 /*
-	A thread that executes ThreadFunction and then exits.
+	A thread that executes Entrypoint and then exits.
 
-	Derive from this class and implement ThreadFunction().
+	Derive from this class and implement Entrypoint().
 */
 class CAT_EXPORT Thread
 {
