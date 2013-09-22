@@ -546,7 +546,7 @@ int main() {
 	int n = 5;
 	double Qtarget = 0.000001;
 
-	for (int n = 1; n < 1000; ++n) {
+	for (int n = 1; n < 64000; ++n) {
 		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget) << endl;
 		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget, true) << endl;
 	}

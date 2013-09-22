@@ -12,11 +12,15 @@ CFLAGS = -Wall -fstrict-aliasing -I ./shared
 CPFLAGS = $(CFLAGS)
 
 
+# Multi-threaded version avoids large latency spikes in encoder/decoder processing
+
+
 # Object files
+mt_o = Mutex.o Thread.o WaitableFlag.o
 shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
-tester_o = Tester.o $(wirehair_o) $(calico_o) $(shared_o)
+tester_o = Tester.o $(wirehair_o) $(calico_o) $(shared_o) $(mt_o)
 redundancy_o = Redundancy.o $(shared_o)
 
 
@@ -55,6 +59,18 @@ redtest : $(redundancy_o)
 
 Redundancy.o : Redundancy.cpp
 	$(CCPP) $(CPFLAGS) -c Redundancy.cpp
+
+
+# Multi-threading shared objects
+
+Mutex.o : shared/Mutex.cpp
+	$(CCPP) $(CPFLAGS) -c shared/Mutex.cpp
+
+Thread.o : shared/Thread.cpp
+	$(CCPP) $(CPFLAGS) -c shared/Thread.cpp
+
+WaitableFlag.o : shared/WaitableFlag.cpp
+	$(CCPP) $(CPFLAGS) -c shared/WaitableFlag.cpp
 
 
 # Shared objects

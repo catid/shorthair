@@ -302,6 +302,17 @@ static const int PONG_SIZE = 1 + 4 + 4;
 static const u8 PAST_GROUP_THRESH = 127; // Group ID wrap threshold
 
 
+/*
+ * S = Swap interval (ms)
+ *
+ * R/S = # of recovery symbols to send per ms
+ *
+ * And at least R.
+ *
+ * Delay since swap * R/S - Number sent <= R = Number to send now
+ */
+
+
 
 class LossEstimator {
 	static const int BINS = 32;
