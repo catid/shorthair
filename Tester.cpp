@@ -491,6 +491,7 @@ public:
 
 
 struct SourceSettings {
+	double target_loss;			// Target packet loss rate
 	float min_loss;				// [0..1] packetloss probability lower limit
 	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
 	int buffer_time;			// Milliseconds for end-to-end buffering
@@ -794,6 +795,8 @@ class BrookSource {
 
 	// Calculated interval from delay
 	u32 _swap_interval;
+	u32 _last_swap_time;
+	int _redundant_count, _redundant_sent;
 
 	// Next time to trigger a swap
 	u32 _swap_trigger;
@@ -802,15 +805,14 @@ class BrookSource {
 	u32 _next_id;
 
 	// Send a check symbol
-	void SendCheckSymbol() {
+	bool SendCheckSymbol() {
 		u8 *buffer = _packet_buffer.get();
-
 		int bytes = _encoder.GenerateRecoveryBlock(buffer + 1);
 
 		// If no data to send,
 		if (bytes <= 0) {
 			// Abort
-			return;
+			return false;
 		}
 
 		// Prepend the code group
@@ -821,6 +823,8 @@ class BrookSource {
 
 		// Transmit
 		_settings.source->SendData(buffer, bytes);
+
+		return true;
 	}
 
 	// Calculate interval from delay
@@ -828,13 +832,6 @@ class BrookSource {
 		int delay = _delay.Get();
 
 		// TODO: Calculate _swap_interval
-	}
-
-	// Calculate symbol rate from loss
-	void CalculateRate() {
-		float loss = _loss.Get();
-
-		// TODO: Calculate _check_symbols_max and _check_symbols_per_ms
 	}
 
 	// From pong message, round-trip time
@@ -859,8 +856,6 @@ class BrookSource {
 		if (count > 0) {
 			_loss.Insert(seen, count);
 			_loss.Calculate();
-
-			CalculateRate();
 		}
 	}
 
@@ -892,9 +887,8 @@ public:
 		_delay.Initialize(_settings.min_delay, _settings.max_delay);
 		_loss.Initialize(_settings.min_loss);
 
-		_last_tick = 0;
+		_last_swap_time = 0;
 		_code_group = 0;
-		_input_symbol = 0;
 
 		// Allocate recovery packet workspace
 		_packet_buffer.resize(BROOK_OVERHEAD + _settings.max_size);
@@ -902,11 +896,11 @@ public:
 		CAT_OBJCLR(_group_stamps);
 
 		CalculateInterval();
-		CalculateRate();
 
 		_intialized = true;
 	}
 
+	// Cleanup
 	void Finalize() {
 		if (_intialized) {
 			_encoder.Finalize();
@@ -917,7 +911,7 @@ public:
 		}
 	}
 
-	// Send some data with low latency
+	// Send a new packet
 	void Send(const void *data, int len) {
 		CAT_ENFORCE(len < _settings.max_size);
 
@@ -958,131 +952,57 @@ public:
 		_settings.source->SendData(_packet_buffer.get(), bytes);
 	}
 
-	// Called once per tick, send all pending data and check symbols, providing
-	// a timestamp in milliseconds
-	void Tick(u32 ms) {
-		// If it is time to swap the buffer,
-		if ((s32)(ms - _swap_trigger) > 0) {
-			_swap_trigger = ms + _swap_interval;
+	// Called once per tick, about 10-20 ms
+	void Tick() {
+		const u32 ms = _clock.msec();
 
-			CalculateRedundancy();
+		const int recovery_time = ms - _last_swap_time;
+		int expected_sent = _redundant_count;
+
+		// If not swapping the encoder this tick,
+		if (recovery_time < _swap_interval) {
+			int elapsed = ((_redundant_count + 1) * recovery_time) / _swap_interval;
+
+			// Pick min(_redundant_count, elapsed)
+			if (expected_sent > elapsed) {
+				expected_sent = elapsed;
+			}
+		}
+
+		// Calculate number of redundant symbols to send right now
+		const int send_count = expected_sent - _redundant_sent;
+
+		// If there are any new packets to send,
+		if (send_count > 0) {
+			// For each check packet to send,
+			for (int ii = 0; ii < send_count; ++ii) {
+				if (!SendCheckSymbol()) {
+					break;
+				}
+
+				++_redundant_sent;
+			}
+		}
+
+		// If it is time to swap the encoder,
+		if (recovery_time >= _swap_interval) {
+			_last_swap_time = ms;
+
+			// Calculate number of redundant packets to send this time
+			_redundant_count = CalculateRedundancy(_loss.Get(), _encoder.GetCurrentCount(), _settings.target_loss);
+			_redundant_sent = 0;
+
+			// NOTE: These packets will be spread out over the swap interval
 
 			// Start encoding queued data in another thread
 			_encoder.EncodeQueued();
 		}
-
-		// Calculate tick interval
-		u32 tick_interval = ms - _last_tick;
-		_last_tick = ms;
-
-		// Calculate symbols to send
-		u32 check_symbols = _check_symbols_per_ms * tick_interval;
-		if (check_symbols > _check_symbols_max) {
-			check_symbols = _check_symbols_max;
-		}
-
-		for (;;) {
-			// Compose outgoing packet
-			u8 *buffer = _packet_buffer.get();
-
-			// Add next code group (this is part of the code group after the next swap)
-			buffer[0] = _code_group + 1;
-
-			// If just swapped,
-			if (_next_count == 0) {
-				// Tag this new group with the start time
-				_group_stamps[_code_group + 1] = ms;
-			} else if (_next_count >= wirehair::CAT_WIREHAIR_MAX_N) {
-				// Force swap early
-				swap = true;
-			}
-
-			// Add check symbol number
-			*(u16*)(buffer + 1) = getLE((u16)(_next_count - 1));
-
-			// For original data send the current block count, which will
-			// always be one ahead of the block ID.
-			// NOTE: This allows the decoder to know when it has received
-			// all the packets in a code group for the zero-loss case.
-			*(u16*)(buffer + 1 + 2) = (u16)_next_count;
-
-			// Copy data part
-			memcpy(buffer + PROTOCOL_OVERHEAD, p->data, bytes);
-
-			// Encrypt
-			bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, buffer, _packet_buffer.size());
-
-			// Transmit
-			_settings.source->SendData(buffer, bytes);
-
-			// If swapping now,
-			if (swap) {
-				swap = false;
-
-				SetupEncoder();
-			}
-
-			// Send next check symbol
-			if (check_symbols > 0) {
-				SendCheckSymbol();
-				--check_symbols;
-			}
-		}
-
-		// TODO
-
-		// Read data in chunks
-		int bytes;
-		while ((bytes = _settings.source->ReadData(data, _settings.chunk_size))) {
-			// NOTE: For now, require that the data returned is exactly the size requested.
-			// This has some obvious failure modes (very small data), but avoids a lot of
-			// complications.
-			CAT_ENFORCE(bytes == _settings.chunk_size);
-
-			// Append to buffer
-			_buffer.insert(_buffer.end(), data, data + bytes);
-
-			// Add next code group (this is part of the code group after the next swap)
-			buffer[0] = _code_group + 1;
-
-			// If just swapped,
-			if (_input_symbol == 0) {
-				// Tag this new group with the start time
-				_group_stamps[_code_group + 1] = ms;
-			}
-
-			// Add check symbol number
-			*(u16*)(buffer + 1) = getLE((u16)_input_symbol);
-
-			// Set block count to zero for input symbols
-			// TODO: May need to set block count for at least the last symbol
-			*(u16*)(buffer + 1 + 2) = 0;
-
-			// Encrypt
-			bytes = _cipher.Encrypt(buffer, bytes + PROTOCOL_OVERHEAD, buffer, sizeof(buffer));
-
-			// Transmit
-			_settings.source->SendData(buffer, bytes);
-
-			// Next input symbol id
-			++_input_symbol;
-
-			// Send next check symbol
-			if (check_symbols > 0) {
-				SendCheckSymbol();
-				--check_symbols;
-			}
-		}
-
-		// Send remaining check symbols
-		while (check_symbols > 0) {
-			SendCheckSymbol();
-			--check_symbols;
-		}
 	}
 
 	// On packet received
-	void Recv(u32 ms, u8 *pkt, int len) {
+	void Recv(u8 *pkt, int len) {
+		u32 ms = _clock.msec();
+
 		u64 iv;
 		len = _cipher.Decrypt(pkt, len, iv);
 
@@ -1095,10 +1015,11 @@ public:
 
 			// Calculate RTT
 			int rtt = ms - _group_stamps[code_group];
-
-			// Compute updates
-			UpdateRTT(rtt);
-			UpdateLoss(seen, count);
+			if (rtt > 0) {
+				// Compute updates
+				UpdateRTT(rtt);
+				UpdateLoss(seen, count);
+			}
 		}
 	}
 };
