@@ -10,7 +10,7 @@ OPTFLAGS = -O4
 DBGFLAGS = -g -O0 -DDEBUG
 CFLAGS = -Wall -fstrict-aliasing -I ./shared
 CPFLAGS = $(CFLAGS)
-LIBS = -pthread
+LIBS = -lpthread
 
 
 # Multi-threaded version avoids large latency spikes in encoder/decoder processing

@@ -632,7 +632,7 @@ private: // Thread-Private data:
 		// For each sent packet,
 		u8 *buffer = _encode_buffer.get();
 		for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
-			u16 size = p->size;
+			u16 size = p->id_or_len;
 
 			// Start each block off with the 16-bit size
 			*(u16*)buffer = getLE(size);
@@ -876,10 +876,10 @@ struct CodeGroup {
 			return;
 		}
 
-		const u32 id = p->id;
+		const u32 id = p->id_or_len;
 
 		// Attempt fast O(1) insertion at end
-		if (tail && id > tail->id) {
+		if (tail && id > tail->id_or_len) {
 			// Insert at the end
 			tail->batch_next = p;
 			p->batch_next = 0;
@@ -890,7 +890,7 @@ struct CodeGroup {
 		// Search for insertion point from front, shooting for O(1)
 		Packet *prev = 0, *next;
 		for (next = head; next; next = (Packet*)next->batch_next) {
-			if (id < next->id) {
+			if (id < next->id_or_len) {
 				break;
 			}
 		}
@@ -1054,7 +1054,7 @@ protected:
 
 		for (int ii = 0; ii < block_count; ++ii) {
 			// If we already got that packet,
-			if (p && p->id == ii) {
+			if (p && p->id_or_len == ii) {
 				// Advance to next packet we have
 				p = (Packet*)p->batch_next;
 			} else {
@@ -1076,6 +1076,7 @@ protected:
 	void OnData(u8 *pkt, int len) {
 		// Read packet data
 		u8 code_group = ReconstructCounter<7, u8>(_largest_group, pkt[0]);
+		CodeGroup *group = &_groups[code_group];
 
 		u32 id = getLE(*(u16*)(pkt + 1));
 		u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
@@ -1132,7 +1133,7 @@ protected:
 		// If we have received all original data without loss,
 		if (group->original_seen >= block_count) {
 			// Close the group now
-			group->Close();
+			group->Close(_allocator);
 		}
 
 		// Packet that will contain this data
@@ -1164,6 +1165,8 @@ protected:
 
 		// If recovery is now possible for this group,
 		if (group->CanRecover()) {
+			wirehair::Result r;
+
 			// The block size will be the largest data chunk we have
 			const int block_size = group->largest_len;
 
@@ -1189,7 +1192,7 @@ protected:
 					CAT_CLR(op->data + 2 + op_len, block_size - (op_len + 2));
 
 					// Feed decoder with data
-					r = _decoder.DecodeFeed(op->id, op->data);
+					r = _decoder.DecodeFeed(op->id_or_len, op->data);
 
 					// We should not succeed at decoding at this point
 					CAT_ENFORCE(r);
@@ -1198,13 +1201,13 @@ protected:
 				// Add recovery packets
 				for (Packet *op = group->recovery_head; op; op = (Packet*)op->batch_next) {
 					// Feed decoder with data
-					r = _decoder.DecodeFeed(op->id, op->data);
+					r = _decoder.DecodeFeed(op->id_or_len, op->data);
 
 					// If decoding was successful,
 					if (!r) {
 						// Recover missing packets
 						RecoverGroup(group);
-						group->Close();
+						group->Close(_allocator);
 						_decoding = false;
 						break;
 					}
@@ -1225,7 +1228,7 @@ protected:
 				if (!r) {
 					// Recover missing packets
 					RecoverGroup(group);
-					group->Close();
+					group->Close(_allocator);
 					_decoding = false;
 				}
 			}
@@ -1258,7 +1261,7 @@ protected:
 
 public:
 	CAT_INLINE Brook() {
-		_intialized = false;
+		_initialized = false;
 	}
 
 	CAT_INLINE virtual ~Brook() {
@@ -1266,7 +1269,7 @@ public:
 	}
 
 	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const SourceSettings &settings) {
+	bool Initialize(const u8 key[SKEY_BYTES], const BrookSettings &settings) {
 		Finalize();
 
 		_clock.OnInitialize();
@@ -1277,17 +1280,9 @@ public:
 			return false;
 		}
 
-		CAT_ENFORCE(_settings.max_size <= MAX_CHUNK_SIZE);
+		CAT_ENFORCE(_settings.max_data_size <= MAX_CHUNK_SIZE);
 
-		_encoder.Initialize(_settings.max_size);
-
-		_delay.Initialize(_settings.min_delay, _settings.max_delay);
-		_loss.Initialize(_settings.min_loss);
-
-		_last_swap_time = 0;
-		_code_group = 0;
-
-		const int buffer_size = BROOK_OVERHEAD + _settings.max_size;
+		const int buffer_size = BROOK_OVERHEAD + _settings.max_data_size;
 
 		// Allocate recovery packet workspace
 		_packet_buffer.resize(buffer_size);
@@ -1295,32 +1290,44 @@ public:
 		// Initialize packet storage buffer allocator
 		_allocator.Initialize(sizeof(Packet) - 1 + buffer_size);
 
+		_encoder.Initialize(&_allocator);
+
+		_delay.Initialize(_settings.min_delay, _settings.max_delay);
+		_loss.Initialize(_settings.min_loss);
+
+		_last_swap_time = 0;
+		_code_group = 0;
+
+		_decoding = false;
+
+		// Clear group data
+		CAT_OBJCLR(_groups);
+
 		CAT_OBJCLR(_group_stamps);
 
 		CalculateInterval();
 
-		_intialized = true;
+		_initialized = true;
+
+		return true;
 	}
 
 	// Cleanup
 	void Finalize() {
-		if (_intialized) {
+		if (_initialized) {
 			_encoder.Finalize();
 
 			_clock.OnFinalize();
 
-			_intialized = false;
+			_initialized = false;
 		}
 	}
 
 	// Send a new packet
 	void Send(const void *data, int len) {
-		CAT_ENFORCE(len < _settings.max_size);
+		CAT_ENFORCE(len < _settings.max_data_size);
 
-		Sent *p = _encoder.QueueSent();
-
-		// Store length
-		p->size = (u16)len;
+		Packet *p = _encoder.Queue(len);
 
 		u8 *buffer = p->data;
 
@@ -1332,7 +1339,7 @@ public:
 		// On first packet of a group,
 		if (block_count == 1) {
 			// Tag this new group with the start time
-			_group_stamps[_code_group + 1] = m_clock.msec();
+			_group_stamps[_code_group + 1] = _clock.msec();
 		}
 
 		// Add check symbol number
@@ -1348,7 +1355,7 @@ public:
 		memcpy(buffer + PROTOCOL_OVERHEAD, data, len);
 
 		// Encrypt
-		bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, _packet_buffer.get(), _packet_buffer.size());
+		int bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + len, _packet_buffer.get(), _packet_buffer.size());
 
 		// Transmit
 		_settings.interface->SendData(_packet_buffer.get(), bytes);
@@ -1369,7 +1376,7 @@ public:
 		memcpy(buffer + 1, data, len);
 
 		// Encrypt
-		bytes = _cipher.Encrypt(buffer, 1 + len, buffer, _packet_buffer.size());
+		int bytes = _cipher.Encrypt(buffer, 1 + len, buffer, _packet_buffer.size());
 
 		// Transmit
 		_settings.interface->SendData(buffer, bytes);
@@ -1429,6 +1436,7 @@ public:
 		switch (pkt[1]) {
 		case PONG_TYPE:
 			if (len == PONG_SIZE) {
+				u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
 				u32 seen = getLE(*(u32*)(pkt + 2));
 				u32 count = getLE(*(u32*)(pkt + 2 + 4));
 
@@ -1466,306 +1474,6 @@ public:
 		}
 	}
 };
-
-
-
-
-// TODO: Add startup mode where we accept any code group as the first one
-
-	Packet *AllocatePacket(u32 id, const void *data) {
-		Packet *p = _allocator.AcquireObject<Packet>();
-		p->batch_next = 0;
-		p->id = id;
-		memcpy(p->data, data, _settings.chunk_size);
-		return p;
-	}
-
-	void FreePacket(Packet *p) {
-		_allocator.ReleaseBatch(p);
-	}
-
-	void FinishGroup(Group *group) {
-		CAT_DEBUG_ENFORCE(group == &_groups[_next_group]);
-
-		for (;;) {
-			// If group was open,
-			if (group->open) {
-				// Close off this group.
-				group->Close(_allocator);
-			}
-
-			// Decoder is now inactive
-			_decoding = false;
-
-			// Set next expected (group, id)
-			_next_group++;
-			_next_id = 0;
-
-			// The relative group will now be -1 = 255,
-			// so further packets for this group will be
-			// dropped until the group id rolls back around.
-
-			// Pass as many from the next group as we can now
-			group = &_group[_next_group];
-
-			// If not finished another group immediately,
-			if (!ProcessOOS(group)) {
-				// If group is not recoverable now,
-				if (!group->CanRecover() || !AttemptRecovery(group)) {
-					break;
-				}
-
-				// Recover and pass all the packets
-				RecoverGroup(group);
-			}
-		}
-	}
-
-	// Returns true if code group was finished, so packet can be discarded
-	bool ProcessOOS(CodeGroup *group) {
-		// O(1) Check OOS
-		Packet *oos = group->oos_head;
-		while (oos && oos->id == _next_id) {
-			// Pass along queued data
-			_settings.sink->OnPacket(oos->data);
-
-			// Increment ID
-			_next_id++;
-
-			// If just finished the group,
-			if (block_count && _next_id >= group->block_count) {
-				return true;
-			}
-
-			// Store next in oos list
-			Packet *next = (Packet*)oos->batch_next;
-
-			// Pop off OOS head
-			group->PopOOS();
-
-			// Add it to passed list
-			group->AddPassed(oos);
-
-			// Continue with next
-			oos = next;
-		}
-
-		return false;
-	}
-
-	// Recover the remaining blocks for a code group and pass them on
-	void RecoverGroup(CodeGroup *group) {
-		// Acquire some memory temporarily to store the recovered block
-		Packet *p = _allocator.AcquireObject<Packet>();
-
-		do {
-			// Reconstruct the block for the next expected ID
-			_decoder.ReconstructBlock(_next_id, p->data);
-
-			// Pass along queued data
-			_settings.sink->OnPacket(p->data);
-
-			// Increment ID
-			_next_id++;
-
-			// Process OOS original data until we get stuck again or finish
-		while (!ProcessOOS(group));
-
-		// NOTE: Message is now completely delivered
-
-		// Free temporary memory
-		FreePacket(p);
-	}
-
-	// Returns true if recovery succeeded
-	bool AttemptRecovery(CodeGroup *group, Packet *p = 0) {
-		wirehair::Result r;
-
-		// If not decoding yet,
-		if (!_decoding) {
-			r = _decoder.InitializeDecoder(block_count * _settings.chunk_size, _settings.chunk_size);
-
-			// We should always initialize correctly
-			CAT_ENFORCE(!r && _decoder.BlockCount() == block_count);
-
-			// Decoding process has started
-			_decoding = true;
-
-			// Add Recovery packets
-			for (Packet *op = group->head; op; op = (Packet*)op->batch_next) {
-				r = _decoder.DecodeFeed(op->id, op->data);
-				if (!r) {
-					return true;
-				}
-			}
-		} else if (p) {
-			// Feed the latest packet
-			r = _decoder.DecodeFeed(p->id, p->data);
-			if (!r) {
-				return true;
-			}
-		} else {
-			// Cannot recover without any new data
-			return false;
-		}
-
-		return false;
-	}
-
-public:
-	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const SinkSettings &settings) {
-		if (_cipher.Initialize(key, "BROOK", calico::INITIATOR)) {
-			return false;
-		}
-
-		_settings = settings;
-
-		_decoding = false;
-
-		// Expect (0, 0) first
-		_next_group = _next_id = 0;
-
-		_group_timeout = 0;
-
-		// Initialize the packet allocator
-		_allocator.Initialize(sizeof(Packet)-1 + _settings.chunk_size);
-
-		// Clear group data
-		CAT_OBJCLR(_groups);
-	}
-
-	// On packet received
-	void Recv(u8 *pkt, int len) {
-		u32 ms = _clock.msec();
-
-		u64 iv;
-		len = _cipher.Decrypt(pkt, len, iv);
-
-		// If packet contains data,
-		if (len > PROTOCOL_OVERHEAD) {
-			// Read packet data
-			u8 code_group = pkt[0];
-
-			// Rotate group id
-			u8 relative_group = code_group - _next_group;
-
-			// If received group is in the past,
-			if (relative_group > PAST_GROUP_THRESH) {
-				// Ignore data in the past, which happens often
-				// when there is no packet loss and the error
-				// correction codes are not useful.
-				return;
-			}
-
-			CodeGroup *group = &_groups[code_group];
-
-			u32 id = getLE(*(u16*)(pkt + 1));
-			u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
-			u8 *data = pkt + PROTOCOL_OVERHEAD;
-
-			// Reconstruct block id
-			id = ReconstructCounter<16, u32>(group->largest_id, id);
-
-			// Pong first packet of each group as fast as possible
-			if (id == 0) {
-				SendPong(code_group);
-			}
-
-			// Attempt to fill in block count if it is already known
-			if (block_count == 0) {
-				block_count = group->block_count;
-			}
-
-			// If group is not open yet,
-			if (!group->open) {
-				// Open group
-				group->Open(ms);
-			}
-
-			// If ID is the largest seen so far,
-			if (id > group->largest_id) {
-				// Update largest seen ID for decoding ID in next packet
-				group->largest_id = id;
-			}
-
-			// Packet that will contain this data
-			Packet *p;
-
-			// If it is next in sequence,
-			if (code_group == _next_group && id == _next_id) {
-				// Pass it along immediately
-				_settings.sink->OnPacket(data);
-
-				// Increment ID
-				_next_id++;
-
-				// If just finished the group,
-				if ((block_count && _next_id >= block_count) ||
-					ProcessOOS(group)) {
-					// Zero-loss case.
-					// ProcessOOS() can return true and finish the group when
-					// all needed packet data was found in OOS list.
-					FinishGroup(group);
-					return;
-				}
-
-				// NOTE: At this point we have not received all the original
-				// data yet, so store anything we get for recovery:
-				p = AllocatePacket(id, data);
-
-				// Add to passed list since it was already passed along
-				group->AddPassed(p);
-
-				// Fall-thru to handle out of sequence case with recovery:
-			} else {
-				// Zero-loss case: If seen all the original data for this group,
-				if (block_count && group->original_seen >= block_count) {
-					// Ignore any new data
-					return;
-				}
-
-				// Otherwise: Store any data we receive until we get a chance
-				// to run the decoder on it.
-				p = AllocatePacket(id, data);
-
-				// If out of sequence original data,
-				if (!block_count || id < block_count) {
-					// Add to out of sequence list
-					group->AddOOS(p);
-				} else {
-					// Add to recovery list
-					group->AddRecovery(p);
-				}
-
-				// Fall-thru to try to recover with the new data
-			}
-
-			// If waiting for this group and recovery is possible,
-			if (code_group == _next_group && group->CanRecover()) {
-				if (AttemptRecovery(group, p)) {
-					// Recover and pass all the packets
-					RecoverGroup(group);
-
-					// Finish off this group
-					FinishGroup(group);
-
-					// Stop here
-					return;
-				}
-			}
-
-			// TODO: Implement IV-based packet-loss estimator
-		}
-	}
-};
-
-
-
-
-
-
-
 
 
 int main()

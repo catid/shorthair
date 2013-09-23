@@ -299,9 +299,8 @@ static unsigned long ke[256];
 static float we[256],fe[256];
 
 void MersenneTwister::InitializeExp() {
-	const double m1 = 2147483648.0, m2 = 4294967296.;
-	double dn=3.442619855899,tn=dn,vn=9.91256303526217e-3, q;
-	double de=7.697117470131487, te=de, ve=3.949659822581572e-3;
+	const double m2 = 4294967296.;
+	double q, de=7.697117470131487, te=de, ve=3.949659822581572e-3;
 	int i;
 
 	/* Set up tables for REXP */
