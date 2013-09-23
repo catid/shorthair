@@ -448,9 +448,6 @@ public:
 
 class IDataSource {
 public:
-	// Returns number of bytes actually read or 0 for end of data
-	virtual int ReadData(void *buffer, int max_bytes) = 0;
-
 	// Data to send to remote host
 	virtual void SendData(void *buffer, int bytes) = 0;
 };
@@ -477,6 +474,9 @@ struct Sent : BatchHead {
 /*
  * Run the encoder in a separate thread to avoid adding latency spikes
  * to the original data packet stream.
+ *
+ * Not thread-safe.  It assumes that only one thread is accessing its
+ * interface at a time.
  */
 class EncoderThread : public Thread {
 protected: // Shared data:
@@ -492,10 +492,18 @@ protected: // Shared data:
 	// Next block id to produce
 	u32 _next_block_id;
 
-	Mutex _lock;
-
 	// Encoder is ready to produce symbols?
-	bool _encoder_ready;
+	// Cleared by main thread, set by encoder thread
+	volatile bool _encoder_ready;
+
+	// Lock to hold during processing to avoid reentrancy
+	Mutex _processing_lock;
+
+	// Indicates previous group can be disposed
+	volatile bool _last_garbage;
+
+private: // Thread-Private data:
+	wirehair::Encoder _encoder;
 
 	// Code group size
 	int _group_largest, _group_count;
@@ -503,14 +511,19 @@ protected: // Shared data:
 	// Fixed code group list
 	Sent *_group_head, *_group_tail;
 
-private: // Thread-Private data:
-	wirehair::Encoder _encoder;
-
 	// Size of block for this group
 	int _group_block_size;
 
 	// Large message buffer for code group
 	SmartArray<u8> _encode_buffer;
+
+	CAT_INLINE void FreeGarbage() {
+		if (_last_garbage) {
+			_last_garbage = false;
+			// Free packet buffers
+			_allocator.ReleaseBatch(BatchSet(_group_head, _group_tail));
+		}
+	}
 
 	virtual bool Entrypoint(void *param) {
 		while (!_kill) {
@@ -523,10 +536,21 @@ private: // Thread-Private data:
 
 	void Initialize() {
 		_kill = false;
+		_last_garbage = false;
+		_encoder_ready = false;
+		_next_block_id = 0;
+		_largest = 0;
+		_block_count = 0;
+		_sent_head = _sent_tail = 0;
+
 		StartThread();
+
+		_initialized = true;
 	}
 
 	void Process() {
+		AutoLock lock(_processing_lock);
+
 		// Byte per data chunk
 		int chunk_size = _group_largest;
 		int block_count = _group_count;
@@ -535,6 +559,7 @@ private: // Thread-Private data:
 
 		// NOTE: Blocks are chunks with 2-byte lengths prepended
 		int block_size = 2 + chunk_size;
+		_group_block_size = block_size;
 
 		// Calculate size of encoded messages
 		u32 message_size = block_count * block_size;
@@ -567,6 +592,10 @@ private: // Thread-Private data:
 
 		_next_block_id = block_count;
 
+		// Flag garbage for takeout
+		_last_garbage = true;
+
+		// Avoid re-ordering writes by optimizer at compile time
 		CAT_FENCE_COMPILER;
 
 		_encoder_ready = true;
@@ -597,40 +626,77 @@ public:
 		}
 
 		// Insert at end of list
-		if (_next_tail) {
-			_next_tail->batch_next = p;
+		if (_sent_tail) {
+			_sent_tail->batch_next = p;
 		} else {
-			_next_head = p;
+			_sent_head = p;
 		}
-		_next_tail = p;
+		_sent_tail = p;
 		p->batch_next = 0;
 
 		++_block_count;
 	}
 
 	void EncodeQueued() {
+		// If no data to encode,
+		if (_largest <= 0) {
+			return;
+		}
+
 		if (!_initialized) {
-			_initialized = true;
 			Initialize();
 		}
 
-		AutoLock lock(_lock);
+		// Hold processing lock to avoid calling this too fast
+		AutoLock lock(_processing_lock);
 
-		_block_bytes = block_bytes;
+		FreeGarbage();
 
-		// TODO: Put this somewhere
-		// Free packet buffers
-		_allocator.ReleaseBatch(BatchSet(_group_head, _group_tail));
+		// Flag encoder as being busy processing previous data
+		_encoder_ready = false;
+
+		// Move code group profile into private memory
+		_group_largest = _largest;
+		_group_count = _block_count;
+		_group_head = _sent_head;
+		_group_tail = _sent_tail;
+
+		// Clear the shared workspace for new data
+		_largest = 0;
+		_block_count = 0;
+		_sent_head = _sent_tail = 0;
+
+		// Wake up the processing thread
+		_wake.Set();
 	}
 
-	bool GenerateRecoveryBlock(void *block, u32 block_bytes) {
-		return false;
+	// Precondition: GenerateRecoveryBlock() returned > 0
+	CAT_INLINE int GetBlockCount() {
+		return _group_count;
+	}
 
-		CAT_ENFORCE(_block_bytes == block_bytes);
+	// Returns false if recovery blocks cannot be sent yet
+	int GenerateRecoveryBlock(u8 *buffer) {
+		if (!_encoder_ready) {
+			return 0;
+		}
 
-		CAT_ENFORCE(_block_bytes == _encoder.Encode(_next_block_id++, block));
+		// Get next block ID to send
+		u32 block_id = _next_block_id++;
 
-		return true;
+		// Add low bits of check symbol number
+		*(u16*)buffer = getLE((u16)block_id);
+
+		// Add block count
+		*(u16*)(buffer + 2) = getLE((u16)_group_count);
+
+		CAT_ENFORCE(_group_block_size == block_bytes);
+
+		CAT_ENFORCE(_group_block_size == _encoder.Encode(block_id, buffer + 4));
+
+		FreeGarbage();
+
+		return 4 + _group_block_size;
 	}
 };
 
@@ -639,6 +705,8 @@ class BrookSource {
 	SourceSettings _settings;
 
 	calico::Calico _cipher;
+
+	EncoderThread _encoder;
 
 	// Bytes per wirehair block
 	int _block_bytes;
@@ -672,37 +740,26 @@ class BrookSource {
 	// Next symbol ID or 0 for uninitialized state
 	u32 _next_id;
 
-	void SetupEncoder() {
-	}
-
 	// Send a check symbol
 	void SendCheckSymbol() {
-		const u16 block_count = _encoder.BlockCount();
-
-		CAT_ENFORCE(_next_id >= block_count);
-
 		u8 *buffer = _packet_buffer.get();
+
+		int bytes = _encoder.GenerateRecoveryBlock(buffer + 1);
+
+		// If no data to send,
+		if (bytes <= 0) {
+			// Abort
+			return;
+		}
 
 		// Prepend the code group
 		buffer[0] = _code_group;
 
-		// Add low bits of check symbol number
-		*(u16*)(buffer + 1) = getLE((u16)_check_symbol);
-
-		// Add block count
-		*(u16*)(buffer + 1 + 2) = getLE(block_count);
-
-		// FEC encode
-		u32 bytes = _encoder.Encode(_next_id, buffer + PROTOCOL_OVERHEAD);
-
 		// Encrypt
-		bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, buffer, _packet_buffer.size());
+		bytes = _cipher.Encrypt(buffer, 1 + bytes, buffer, _packet_buffer.size());
 
 		// Transmit
 		_settings.source->SendData(buffer, bytes);
-
-		// Next check symbol
-		_next_id++;
 	}
 
 	// Calculate interval from delay
@@ -781,6 +838,10 @@ public:
 		CalculateRate();
 
 		CAT_ENFORCE(_settings.chunk_size <= MAX_CHUNK_SIZE);
+	}
+
+	// Send some data with low latency
+	void Send(const void *data, int len) {
 	}
 
 	// Called once per tick, send all pending data and check symbols, providing
