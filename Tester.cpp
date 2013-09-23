@@ -572,10 +572,12 @@ private: // Thread-Private data:
 				Process();
 			}
 		}
+
+		return true;
 	}
 
 	void Process() {
-		AutoLock lock(_processing_lock);
+		AutoMutex lock(_processing_lock);
 
 		// Byte per data chunk
 		int chunk_size = _group_largest;
@@ -606,7 +608,7 @@ private: // Thread-Private data:
 			memcpy(buffer, p->data + PROTOCOL_OVERHEAD, size);
 
 			// Zero the high bytes
-			memset(buffer + size, chunk_size - size);
+			CAT_CLR(buffer + size, chunk_size - size);
 
 			// On to the next
 			buffer += chunk_size;
@@ -635,7 +637,7 @@ public:
 	void Initialize(int max_data_size) {
 		Finalize();
 
-		_allocator.Initialize(BOOK_OVERHEAD + max_data_size);
+		_allocator.Initialize(BROOK_OVERHEAD + max_data_size);
 
 		_kill = false;
 		_last_garbage = false;
@@ -685,25 +687,18 @@ public:
 
 		++_block_count;
 
-		CAT_ENFORCE(_block_count <= wirehair::CAT_WIREHAIR_MAX_N);
+		CAT_ENFORCE(_block_count <= CAT_WIREHAIR_MAX_N);
+
+		return p;
 	}
 
-	CAT_INLINE GetCurrentCount() {
+	CAT_INLINE int GetCurrentCount() {
 		return _block_count;
 	}
 
 	void EncodeQueued() {
-		// If no data to encode,
-		if (_block_count <= 0) {
-			return;
-		}
-
-		if (!_initialized) {
-			Initialize();
-		}
-
 		// Hold processing lock to avoid calling this too fast
-		AutoLock lock(_processing_lock);
+		AutoMutex lock(_processing_lock);
 
 		// NOTE: After N = 1 case, next time encoding starts it will free the last one
 		FreeGarbage();
@@ -726,10 +721,10 @@ public:
 		_sent_head = _sent_tail = 0;
 
 		// If N = 1,
-		if (_block_count == 1) {
+		if (_block_count <= 1) {
 			// Set up for special mode
 			_encoder_ready = true;
-			_group_block_size = _group_head->size;
+			_group_block_size = _group_largest;
 		} else {
 			// Wake up the processing thread
 			_wake.Set();
@@ -831,7 +826,26 @@ class BrookSource {
 	void CalculateInterval() {
 		int delay = _delay.Get();
 
-		// TODO: Calculate _swap_interval
+		// From previous work: Ideal buffer size = delay + swap interval * 2
+
+		// Reasoning: We want to be faster than TCP for recovery, and
+		// ARQ recovery speed > 3x delay : data -> ack -> retrans
+		// Usually there's a timeout also but let's pretend it's ideal ARQ.
+
+		// Crazy idea:
+		// So our buffer size should be 3x delay.
+		// So our swap interval should be about equal to delay.
+
+		// Note that if delay is long, we only really need to have a swap
+		// interval long enough to cover burst losses so this may be an
+		// upper bound for some cases of interest.
+
+		// Idea: Give it at least 20 milliseconds of buffering before a swap
+		if (delay < 20) {
+			delay = 20;
+		}
+
+		_swap_interval = delay;
 	}
 
 	// From pong message, round-trip time
