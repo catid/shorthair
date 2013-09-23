@@ -19,8 +19,6 @@ using namespace cat;
 #include <cmath>
 using namespace std;
 
-static Clock m_clock;
-
 
 /*
  * A visual representation of streaming in general (disregarding FEC):
@@ -302,19 +300,57 @@ static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEA
 static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
 static const int BROOK_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
 static const int PONG_SIZE = 1 + 4 + 4;
+static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const u8 PAST_GROUP_THRESH = 127; // Group ID wrap threshold
 
 
 /*
- * S = Swap interval (ms)
+ * Normal Approximation to Bernoulli RV
  *
- * R/S = # of recovery symbols to send per ms
+ * P(X > r), X ~ B(n+r, p)
  *
- * And at least R.
+ * Recall: E[X] = (n+r)*p, SD(X) = sqrt((n+r)*p*(1-p))
  *
- * Delay since swap * R/S - Number sent <= R = Number to send now
+ * X is approximated by Y ~ N(mu, sigma)
+ * where mu = E[X], sigma = SD(X).
+ *
+ * And: P(X > r) ~= P(Y >= r + 0.5)
+ *
+ * For this to be somewhat accurate, np >= 10 and n(1-p) >= 10.
  */
 
+#define INVSQRT2 0.70710678118655
+
+// Precondition: r > 0
+// Returns probability of loss for given configuration
+double NormalApproximation(int n, int r, double p) {
+	const int m = n + r;
+
+	double u = m * p;
+	double s = sqrt(u * (1. - p));
+
+	return 0.5 * erfc(INVSQRT2 * (r - u - 0.5) / s);
+}
+
+int CalculateRedundancy(double p, int n, double Qtarget) {
+	// TODO: Skip values of r to speed this up
+	int r = 0;
+	double q;
+
+	do {
+		++r;
+		q = NormalApproximation(n, r, p);
+	} while (q > Qtarget);
+
+	++r;
+
+	// Add one extra symbol to fix error of approximation
+	if (n * p < 10. || n * (1 - p) < 10.) {
+		++r;
+	}
+
+	return r;
+}
 
 
 class LossEstimator {
@@ -458,7 +494,7 @@ struct SourceSettings {
 	float min_loss;				// [0..1] packetloss probability lower limit
 	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
 	int buffer_time;			// Milliseconds for end-to-end buffering
-	int max_bytes;				// Maximum input read size in bytes
+	int max_data_size;			// Maximum input read size in bytes
 	IDataSource *source;		// Data source
 };
 
@@ -483,6 +519,9 @@ protected: // Shared data:
 	bool _initialized;
 	volatile bool _kill;
 	WaitableFlag _wake;
+
+	// Packet buffers are allocated with room for the protocol overhead + data
+	ReuseAllocator _allocator;
 
 	// Workspace to accumulate sent packets
 	Sent *_sent_head, *_sent_tail;
@@ -534,20 +573,6 @@ private: // Thread-Private data:
 		}
 	}
 
-	void Initialize() {
-		_kill = false;
-		_last_garbage = false;
-		_encoder_ready = false;
-		_next_block_id = 0;
-		_largest = 0;
-		_block_count = 0;
-		_sent_head = _sent_tail = 0;
-
-		StartThread();
-
-		_initialized = true;
-	}
-
 	void Process() {
 		AutoLock lock(_processing_lock);
 
@@ -555,7 +580,7 @@ private: // Thread-Private data:
 		int chunk_size = _group_largest;
 		int block_count = _group_count;
 
-		CAT_ENFORCE(block_count > 0 && chunk_size > 0);
+		CAT_ENFORCE(block_count > 1 && chunk_size > 0);
 
 		// NOTE: Blocks are chunks with 2-byte lengths prepended
 		int block_size = 2 + chunk_size;
@@ -577,7 +602,7 @@ private: // Thread-Private data:
 			buffer += 2;
 
 			// Add packet data in
-			memcpy(buffer, p->data, size);
+			memcpy(buffer, p->data + PROTOCOL_OVERHEAD, size);
 
 			// Zero the high bytes
 			memset(buffer + size, chunk_size - size);
@@ -592,9 +617,6 @@ private: // Thread-Private data:
 
 		_next_block_id = block_count;
 
-		// Flag garbage for takeout
-		_last_garbage = true;
-
 		// Avoid re-ordering writes by optimizer at compile time
 		CAT_FENCE_COMPILER;
 
@@ -606,19 +628,45 @@ public:
 		_initialized = false;
 	}
 	CAT_INLINE virtual ~EncoderThread() {
-		Shutdown();
+		Finalize();
 	}
 
-	void Shutdown() {
+	void Initialize(int max_data_size) {
+		Finalize();
+
+		_allocator.Initialize(BOOK_OVERHEAD + max_data_size);
+
+		_kill = false;
+		_last_garbage = false;
+		_encoder_ready = false;
+		_next_block_id = 0;
+		_largest = 0;
+		_block_count = 0;
+		_sent_head = _sent_tail = 0;
+
+		StartThread();
+
+		_initialized = true;
+	}
+
+	void Finalize() {
 		if (_initialized) {
 			_kill = true;
+
 			_wake.Set();
+
 			WaitForThread();
+
+			FreeGarbage();
+
 			_initialized = false;
 		}
 	}
 
-	void QueueSent(Sent *p) {
+	Sent *QueueSent() {
+		// Allocate sent packet buffer
+		Sent *p = _allocator.AcquireObject<Sent>();
+
 		// If this new packet is larger than the previous ones,
 		if (_largest < p->size) {
 			// Remember the largest size for when we start emitting check symbols
@@ -635,11 +683,17 @@ public:
 		p->batch_next = 0;
 
 		++_block_count;
+
+		CAT_ENFORCE(_block_count <= wirehair::CAT_WIREHAIR_MAX_N);
+	}
+
+	CAT_INLINE GetCurrentCount() {
+		return _block_count;
 	}
 
 	void EncodeQueued() {
 		// If no data to encode,
-		if (_largest <= 0) {
+		if (_block_count <= 0) {
 			return;
 		}
 
@@ -650,6 +704,7 @@ public:
 		// Hold processing lock to avoid calling this too fast
 		AutoLock lock(_processing_lock);
 
+		// NOTE: After N = 1 case, next time encoding starts it will free the last one
 		FreeGarbage();
 
 		// Flag encoder as being busy processing previous data
@@ -661,18 +716,23 @@ public:
 		_group_head = _sent_head;
 		_group_tail = _sent_tail;
 
+		// Flag garbage for takeout
+		_last_garbage = true;
+
 		// Clear the shared workspace for new data
 		_largest = 0;
 		_block_count = 0;
 		_sent_head = _sent_tail = 0;
 
-		// Wake up the processing thread
-		_wake.Set();
-	}
-
-	// Precondition: GenerateRecoveryBlock() returned > 0
-	CAT_INLINE int GetBlockCount() {
-		return _group_count;
+		// If N = 1,
+		if (_block_count == 1) {
+			// Set up for special mode
+			_encoder_ready = true;
+			_group_block_size = _group_head->size;
+		} else {
+			// Wake up the processing thread
+			_wake.Set();
+		}
 	}
 
 	// Returns false if recovery blocks cannot be sent yet
@@ -690,11 +750,14 @@ public:
 		// Add block count
 		*(u16*)(buffer + 2) = getLE((u16)_group_count);
 
-		CAT_ENFORCE(_group_block_size == block_bytes);
+		if (_group_count == 1) {
+			// Copy original data directly
+			memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
+		} else {
+			CAT_ENFORCE(_group_block_size == _encoder.Encode(block_id, buffer + 4));
 
-		CAT_ENFORCE(_group_block_size == _encoder.Encode(block_id, buffer + 4));
-
-		FreeGarbage();
+			FreeGarbage();
+		}
 
 		return 4 + _group_block_size;
 	}
@@ -702,14 +765,15 @@ public:
 
 
 class BrookSource {
+	bool _intialized;
+
+	Clock _clock;
+
 	SourceSettings _settings;
 
 	calico::Calico _cipher;
 
 	EncoderThread _encoder;
-
-	// Bytes per wirehair block
-	int _block_bytes;
 
 	DelayEstimator _delay;
 	LossEstimator _loss;
@@ -721,9 +785,6 @@ class BrookSource {
 	// Last time we had a tick
 	u32 _last_tick;
 	u8 _code_group;
-
-	// Packet buffer allocator
-	ReuseAllocator _allocator;
 
 	// Swap times for each code group for RTT calculation
 	u32 _group_stamps[256];
@@ -804,9 +865,19 @@ class BrookSource {
 	}
 
 public:
+	CAT_INLINE BrookSource() {
+		_intialized = false;
+	}
+
+	CAT_INLINE virtual ~BrookSource() {
+		Finalize();
+	}
+
 	// On startup:
 	bool Initialize(const u8 key[SKEY_BYTES], const SourceSettings &settings) {
-		Cleanup();
+		Finalize();
+
+		_clock.OnInitialize();
 
 		if (_cipher.Initialize(key, "BROOK", calico::RESPONDER)) {
 			return false;
@@ -814,20 +885,16 @@ public:
 
 		_settings = settings;
 
+		CAT_ENFORCE(_settings.max_size <= MAX_CHUNK_SIZE);
+
+		_encoder.Initialize(_settings.max_size);
+
 		_delay.Initialize(_settings.min_delay, _settings.max_delay);
 		_loss.Initialize(_settings.min_loss);
 
-		_has_symbols = false;
 		_last_tick = 0;
 		_code_group = 0;
 		_input_symbol = 0;
-		_next_id = 0;
-
-		// Clear next list
-		_next_head = _next_tail = 0;
-
-		// Blocks are prepended with length, which included in encoded part
-		_block_bytes = 2 + _settings.chunk_size;
 
 		// Allocate recovery packet workspace
 		_packet_buffer.resize(BROOK_OVERHEAD + _settings.max_size);
@@ -837,21 +904,71 @@ public:
 		CalculateInterval();
 		CalculateRate();
 
-		CAT_ENFORCE(_settings.chunk_size <= MAX_CHUNK_SIZE);
+		_intialized = true;
+	}
+
+	void Finalize() {
+		if (_intialized) {
+			_encoder.Finalize();
+
+			_clock.OnFinalize();
+
+			_intialized = false;
+		}
 	}
 
 	// Send some data with low latency
 	void Send(const void *data, int len) {
+		CAT_ENFORCE(len < _settings.max_size);
+
+		Sent *p = _encoder.QueueSent();
+
+		// Store length
+		p->size = (u16)len;
+
+		u8 *buffer = p->data;
+
+		// Add next code group (this is part of the code group after the next swap)
+		buffer[0] = _code_group + 1;
+
+		u16 block_count = _encoder.GetCurrentCount();
+
+		// On first packet of a group,
+		if (block_count == 1) {
+			// Tag this new group with the start time
+			_group_stamps[_code_group + 1] = m_clock.msec();
+		}
+
+		// Add check symbol number
+		*(u16*)(buffer + 1) = getLE(block_count - 1);
+
+		// For original data send the current block count, which will
+		// always be one ahead of the block ID.
+		// NOTE: This allows the decoder to know when it has received
+		// all the packets in a code group for the zero-loss case.
+		*(u16*)(buffer + 1 + 2) = getLE(block_count);
+
+		// Copy input data into place
+		memcpy(buffer + PROTOCOL_OVERHEAD, data, len);
+
+		// Encrypt
+		bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + bytes, _packet_buffer.get(), _packet_buffer.size());
+
+		// Transmit
+		_settings.source->SendData(_packet_buffer.get(), bytes);
 	}
 
 	// Called once per tick, send all pending data and check symbols, providing
 	// a timestamp in milliseconds
 	void Tick(u32 ms) {
 		// If it is time to swap the buffer,
-		bool swap = false;
 		if ((s32)(ms - _swap_trigger) > 0) {
 			_swap_trigger = ms + _swap_interval;
-			swap = true;
+
+			CalculateRedundancy();
+
+			// Start encoding queued data in another thread
+			_encoder.EncodeQueued();
 		}
 
 		// Calculate tick interval
@@ -865,23 +982,6 @@ public:
 		}
 
 		for (;;) {
-			// Allocate sent packet buffer
-			Sent *p = _allocator.AcquireObject<Sent>();
-
-			// Read from data source
-			int bytes = _settings.source->ReadData(p->data, _settings.max_size);
-			if (bytes <= 0) {
-				_allocator.Release(p);
-				break;
-			}
-
-			// Store length
-			CAT_ENFORCE(bytes < 65536);
-			p->size = (u16)bytes;
-
-			// Queue the packet that is being sent, incrementing next count
-			QueueSent(p);
-
 			// Compose outgoing packet
 			u8 *buffer = _packet_buffer.get();
 
@@ -1583,10 +1683,6 @@ public:
 
 int main()
 {
-	m_clock.OnInitialize();
-
-	m_clock.OnFinalize();
-
 	return 0;
 }
 
