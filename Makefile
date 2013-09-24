@@ -18,10 +18,11 @@ LIBS = -lpthread
 
 # Object files
 mt_o = Mutex.o Thread.o WaitableFlag.o
-shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o
+shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o $(mt_o)
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
-tester_o = Tester.o $(wirehair_o) $(calico_o) $(shared_o) $(mt_o)
+shorthair_o = Shorthair.o $(wirehair_o) $(calico_o)
+tester_o = Tester.o $(shorthair_o) $(shared_o)
 redundancy_o = Redundancy.o $(shared_o)
 
 
@@ -123,6 +124,12 @@ Skein256.o : calico/Skein256.cpp
 
 VHash.o : calico/VHash.cpp
 	$(CCPP) $(CPFLAGS) -c calico/VHash.cpp
+
+
+# Shorthair objects
+
+Shorthair.o : shorthair/Shorthair.cpp
+	$(CCPP) $(CPFLAGS) -c shorthair/Shorthair.cpp
 
 
 # Cleanup

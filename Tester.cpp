@@ -414,10 +414,14 @@ public:
 			count += _bins[ii].count;
 		}
 
-		_loss = (float)((count - seen) / (double)count);
+		if (count > 0) {
+			_loss = (float)((count - seen) / (double)count);
 
-		// Clamp value
-		if (_loss < _min_loss) {
+			// Clamp value
+			if (_loss < _min_loss) {
+				_loss = _min_loss;
+			}
+		} else {
 			_loss = _min_loss;
 		}
 
