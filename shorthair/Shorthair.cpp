@@ -640,7 +640,6 @@ int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 
 void CodeGroup::Open(u32 ms) {
 	open = true;
-	done = false;
 	open_time = ms;
 	largest_id = 0;
 	block_count = 0;
@@ -653,7 +652,6 @@ void CodeGroup::Open(u32 ms) {
 
 void CodeGroup::Close(ReuseAllocator &allocator) {
 	open = false;
-	done = true;
 
 	// Free allocated packet memory O(1)
 	allocator.ReleaseBatch(BatchSet(head, tail));
@@ -707,6 +705,59 @@ void CodeGroup::AddOriginal(Packet *p) {
 		tail = p;
 	}
 	p->batch_next = next;
+}
+
+
+//// GroupFlags
+
+void GroupFlags::ClearOpposite(const u8 group) {
+	// Find current word
+	int word = group >> 5;
+
+	// Clear three opposite words, leaving the
+	// two words ahead and behind alone:
+
+	word += 3;
+	word &= 7;
+	u32 open = _open[word];
+	while (open) {
+		// Find next bit index 0..31
+		u32 msb = BSR32(open);
+
+		// Calculate timeout group
+		u8 timeout_group = (word << 5) | msb;
+
+		OnGroupTimeout(timeout_group);
+
+		// Clear the bit
+		open ^= 1 << msb;
+	}
+	_open[word] = 0;
+	_done[word] = 0;
+
+	++word;
+	word &= 7;
+	open = _open[word];
+	while (open) {
+		u32 msb = BSR32(open);
+		u8 timeout_group = (word << 5) | msb;
+		OnGroupTimeout(timeout_group);
+		open ^= 1 << msb;
+	}
+	_open[word] = 0;
+	_done[word] = 0;
+
+	++word;
+	word &= 7;
+	open = _open[word];
+	while (open) {
+		u32 msb = BSR32(open);
+		u8 timeout_group = (word << 5) | msb;
+		OnGroupTimeout(timeout_group);
+		open ^= 1 << msb;
+	}
+	_open[word] = 0;
+	_done[word] = 0;
 }
 
 
@@ -844,22 +895,27 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 // On receiving a data packet
 void Shorthair::OnData(u8 *pkt, int len) {
 	// Read packet data
-	u8 code_group = ReconstructCounter<7, u8>(_largest_group, pkt[0]);
+	u8 code_group = ReconstructCounter<7, u8>(_last_group, pkt[0]);
 	CodeGroup *group = &_groups[code_group];
+	_last_group = code_group;
+
+	// If this group is already done,
+	if (GroupFlags::IsDone(code_group)) {
+		// Ignore more data received for this group
+		return;
+	}
+
+	// If group is not open yet,
+	if (!group->open) {
+		// Open group
+		GroupFlags::SetOpen(code_group);
+		group->Open(_clock.msec());
+	}
 
 	u32 id = getLE(*(u16*)(pkt + 1));
 	u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
 	u8 *data = pkt + PROTOCOL_OVERHEAD;
 	u16 data_len = (u16)(len - PROTOCOL_OVERHEAD);
-
-	// If group is not open yet,
-	if (!group->open) {
-		// TODO: Avoid re-opening the group if it was recently finished
-		// TODO: Handle case where a whole group cannot be recovered (give up after 4 code groups = 4x delay)
-
-		// Open group
-		group->Open(_clock.msec());
-	}
 
 	// If block count is not the largest seen for this group,
 	if (block_count < group->block_count) {
@@ -903,6 +959,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (group->original_seen >= block_count) {
 		// Close the group now
 		group->Close(_allocator);
+		GroupFlags::SetDone(code_group);
+		return;
 	}
 
 	// Packet that will contain this data
@@ -911,6 +969,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	// Store ID in id/len field
 	p->id = id;
 
+	// If packet ID is from original set,
 	if (id < block_count) {
 		// Store packet, prepending length.
 		// NOTE: We cannot efficiently pad with zeroes yet because we do not
@@ -1003,6 +1062,9 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		}
 	} // end if group can recover
 
+	// Clear opposite in number space
+	GroupFlags::ClearOpposite(code_group);
+
 	// TODO: Implement IV-based packet-loss estimator
 }
 
@@ -1026,6 +1088,10 @@ void Shorthair::SendPong(int code_group) {
 
 	// Send it
 	_settings.interface->SendData(pkt, len);
+}
+
+void Shorthair::OnGroupTimeout(const u8 group) {
+	_groups[group].Close(_allocator);
 }
 
 
@@ -1061,12 +1127,15 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	_last_swap_time = 0;
 	_code_group = 0;
 
+	_last_group = 0;
 	_decoding = false;
 
 	// Clear group data
 	CAT_OBJCLR(_groups);
 
 	CAT_OBJCLR(_group_stamps);
+
+	GroupFlags::Clear();
 
 	CalculateInterval();
 

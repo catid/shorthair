@@ -105,7 +105,7 @@ struct Settings {
 };
 
 
-class Shorthair {
+class Shorthair : protected GroupFlags {
 	// Initialized flag
 	bool _initialized;
 
@@ -168,7 +168,7 @@ private:
 	u8 _decoding_group;
 
 	// Next expected code group
-	u8 _largest_group;
+	u8 _last_group;
 
 	// Statistics since the last pong
 	u32 _seen, _count;
@@ -184,6 +184,9 @@ protected:
 
 	// Send collected statistics
 	void SendPong(int code_group);
+
+	// From GroupFlags
+	virtual void OnGroupTimeout(const u8 group_code);
 
 public:
 	CAT_INLINE Shorthair() {
