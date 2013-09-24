@@ -1196,20 +1196,22 @@ void Shorthair::Tick() {
 }
 
 // On packet received
-void Shorthair::Recv(u8 *pkt, int len) {
+void Shorthair::Recv(void *pkt, int len) {
+	u8 *buffer = static_cast<u8*>( pkt );
+
 	u64 iv;
-	len = _cipher.Decrypt(pkt, len, iv);
+	len = _cipher.Decrypt(buffer, len, iv);
 
 	// If it is a pong,
 	if (len >= PROTOCOL_OVERHEAD) {
 		// Read packet data
-		u8 code_group = pkt[0];
+		u8 code_group = buffer[0];
 
 		// If out of band,
 		if (code_group & 0x80) {
-			OnOOB(pkt, len);
+			OnOOB(buffer, len);
 		} else {
-			OnData(pkt, len);
+			OnData(buffer, len);
 		}
 	}
 }

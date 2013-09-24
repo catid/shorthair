@@ -209,8 +209,8 @@ public:
 	// Called once per tick, about 10-20 ms
 	void Tick();
 
-	// On packet received
-	void Recv(u8 *pkt, int len);
+	// On packet received, buffer will be modified
+	void Recv(void *pkt, int len);
 };
 
 

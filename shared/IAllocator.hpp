@@ -152,11 +152,11 @@ public:
 
 	// Attempt to acquire a number of buffers
 	// Returns the number of valid buffers it was able to allocate
-	virtual u32 AcquireBatch(BatchSet &set, u32 count, u32 bytes = 0);
+	virtual u32 AcquireBatch(BatchSet &set, u32 count, u32 bytes = 0) = 0;
 
 	// Attempt to acquire a number of buffers
 	// Returns the number of valid buffers it was able to allocate
-	virtual void ReleaseBatch(const BatchSet &batch);
+	virtual void ReleaseBatch(const BatchSet &batch) = 0;
 
 	// Delete an object calling the destructor and then freeing memory
     template<class T>
