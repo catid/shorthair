@@ -123,7 +123,6 @@ class Shorthair {
 
 private:
 	//// Encoder
-
 	EncoderThread _encoder;
 
 	// Statistics
@@ -162,13 +161,11 @@ protected:
 
 private:
 	//// Decoder
+	wirehair::Codec _decoder;
 
 	// Is decoder active?
 	bool _decoding;
 	u8 _decoding_group;
-
-	// NOTE: Using codec directly since we want to regenerate blocks instead of whole messages
-	wirehair::Codec _decoder;
 
 	// Next expected code group
 	u8 _largest_group;
