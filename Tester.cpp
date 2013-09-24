@@ -72,6 +72,12 @@ void ZeroLossServer::OnOOB(const u8 *packet, int bytes) {
 
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(void *buffer, int bytes) {
+	// Simulate loss
+	if (_prng->GenerateUnbiased(1, 100) <= 3) {
+		cout << "LOSS" << endl;
+		return;
+	}
+
 	_client->_codec.Recv(buffer, bytes);
 }
 
@@ -124,12 +130,7 @@ void ZeroLossClient::OnOOB(const u8 *packet, int bytes) {
 
 // Send raw data to remote host over UDP socket
 void ZeroLossClient::SendData(void *buffer, int bytes) {
-	// Simulate loss
-	if (_prng->GenerateUnbiased(1, 100) <= 3) {
-		cout << "LOSS" << endl;
-	} else {
-		_server->_codec.Recv(buffer, bytes);
-	}
+	_server->_codec.Recv(buffer, bytes);
 }
 
 void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {

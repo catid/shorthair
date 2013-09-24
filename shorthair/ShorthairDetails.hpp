@@ -256,7 +256,7 @@ struct CodeGroup {
 
 	CAT_INLINE bool CanRecover() {
 		// If block count is still unknown,
-		if (block_count <= 0) {
+		if (largest_id < block_count) {
 			return false;
 		}
 

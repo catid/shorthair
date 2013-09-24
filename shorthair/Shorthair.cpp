@@ -349,8 +349,6 @@ int CalculateRedundancy(double p, int n, double Qtarget) {
 		++r;
 	}
 
-	cout << "Calculating redundancy = " << r << endl;
-
 	return r;
 }
 
@@ -400,8 +398,6 @@ void LossEstimator::Calculate() {
 		_loss = _min_loss;
 	}
 
-	cout << "Calculating loss = " << _loss << endl;
-
 	// TODO: Validate that this is a good predictor
 }
 
@@ -448,8 +444,6 @@ void DelayEstimator::Calculate() {
 	} else if (_delay > _max_delay) {
 		_delay = _max_delay;
 	}
-
-	cout << "Calculating delay = " << _delay << endl;
 
 	// TODO: Validate that this is a good predictor
 }
@@ -511,8 +505,6 @@ void EncoderThread::Process() {
 	CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
 
 	_next_block_id = block_count;
-
-	cout << "ENCODER DONE: blocks = " << block_count << endl;
 
 	// Avoid re-ordering writes by optimizer at compile time
 	CAT_FENCE_COMPILER;
@@ -582,14 +574,15 @@ Packet *EncoderThread::Queue(int len) {
 }
 
 void EncoderThread::EncodeQueued() {
+	if (_block_count <= 0) {
+		return;
+	}
+
 	// Hold processing lock to avoid calling this too fast
 	AutoMutex lock(_processing_lock);
 
 	// NOTE: After N = 1 case, next time encoding starts it will free the last one
 	FreeGarbage();
-
-	// Flag encoder as being busy processing previous data
-	_encoder_ready = false;
 
 	// Move code group profile into private memory
 	_group_largest = _largest;
@@ -606,18 +599,20 @@ void EncoderThread::EncodeQueued() {
 	_sent_head = _sent_tail = 0;
 
 	// If N = 1,
-	if (_block_count <= 1) {
-		cout << "SPECIAL BLOCK COUNT = 1" << endl;
+	if (_group_count <= 1) {
 		// Set up for special mode
 		_encoder_ready = true;
 		_group_block_size = _group_largest;
 	} else {
+		// Flag encoder as being busy processing previous data
+		_encoder_ready = false;
+
 		// Wake up the processing thread
 		_wake.Set();
 	}
 }
 
-// Returns false if recovery blocks cannot be sent yet
+// Returns 0 if recovery blocks cannot be sent yet
 int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 	if (!_encoder_ready) {
 		return 0;
@@ -634,7 +629,6 @@ int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 
 	// If single packet,
 	if (_group_count == 1) {
-		cout << "GENERATE FROM SPECIAL BLOCK COUNT = 1" << endl;
 		// Copy original data directly
 		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
 	} else {
@@ -667,6 +661,11 @@ void CodeGroup::Close(ReuseAllocator &allocator) {
 	// Free allocated packet memory O(1)
 	allocator.ReleaseBatch(BatchSet(head, tail));
 	allocator.ReleaseBatch(BatchSet(recovery_head, recovery_tail));
+
+	head = 0;
+	tail = 0;
+	recovery_head = 0;
+	recovery_tail = 0;
 }
 
 void CodeGroup::AddRecovery(Packet *p) {
@@ -786,7 +785,7 @@ bool Shorthair::SendCheckSymbol() {
 	}
 
 	// Prepend the code group
-	buffer[0] = _code_group;
+	buffer[0] = _code_group & 0x7f;
 
 	// Encrypt
 	bytes = _cipher.Encrypt(buffer, 1 + bytes, buffer, _packet_buffer.size());
@@ -905,6 +904,10 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 
 // On receiving a data packet
 void Shorthair::OnData(u8 *pkt, int len) {
+	if (len <= PROTOCOL_OVERHEAD) {
+		return;
+	}
+
 	// Read packet data
 	u8 code_group = ReconstructCounter<7, u8>(_last_group, pkt[0]);
 	CodeGroup *group = &_groups[code_group];
@@ -966,12 +969,28 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->original_seen++;
 	}
 
-	// If we have received all original data without loss,
-	if (group->original_seen >= block_count) {
-		// Close the group now
-		group->Close(_allocator);
-		GroupFlags::SetDone(code_group);
-		return;
+	// If we know how many blocks to expect,
+	if (group->largest_id >= block_count) {
+		// If block count is special case 1,
+		if (block_count == 1) {
+			// If have not processed the original block yet,
+			if (group->original_seen == 0) {
+				// Process it immediately
+				_settings.interface->OnPacket(data, data_len);
+			}
+
+			group->Close(_allocator);
+			GroupFlags::SetDone(code_group);
+			return;
+		}
+
+		// If we have received all original data without loss,
+		if (group->original_seen >= block_count) {
+			// Close the group now
+			group->Close(_allocator);
+			GroupFlags::SetDone(code_group);
+			return;
+		}
 	}
 
 	// Packet that will contain this data
@@ -1047,6 +1066,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 					// Recover missing packets
 					RecoverGroup(group);
 					group->Close(_allocator);
+					GroupFlags::SetDone(code_group);
 					_decoding = false;
 					break;
 				}
@@ -1068,6 +1088,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				// Recover missing packets
 				RecoverGroup(group);
 				group->Close(_allocator);
+				GroupFlags::SetDone(code_group);
 				_decoding = false;
 			}
 		}
@@ -1181,7 +1202,7 @@ void Shorthair::Send(const void *data, int len) {
 	u8 *buffer = p->data;
 
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[0] = _code_group + 1;
+	buffer[0] = (_code_group + 1) & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
 
@@ -1267,8 +1288,11 @@ void Shorthair::Tick() {
 	if (recovery_time >= _swap_interval) {
 		_last_swap_time = ms;
 
+		// Packet count
+		const int N = _encoder.GetCurrentCount();
+
 		// Calculate number of redundant packets to send this time
-		_redundant_count = CalculateRedundancy(_loss.Get(), _encoder.GetCurrentCount(), _settings.target_loss);
+		_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
 		_redundant_sent = 0;
 
 		// Select next code group
@@ -1278,6 +1302,8 @@ void Shorthair::Tick() {
 
 		// Start encoding queued data in another thread
 		_encoder.EncodeQueued();
+
+		cout << "New code group: N = " << N << " R = " << _redundant_count << endl;
 	}
 }
 
@@ -1288,13 +1314,10 @@ void Shorthair::Recv(void *pkt, int len) {
 	u64 iv;
 	len = _cipher.Decrypt(buffer, len, iv);
 
-	// If it is a pong,
-	if (len >= PROTOCOL_OVERHEAD) {
-		// Read packet data
-		u8 code_group = buffer[0];
-
+	// If a message was decoded,
+	if (len >= 2) {
 		// If out of band,
-		if (code_group & 0x80) {
+		if (buffer[0] & 0x80) {
 			OnOOB(buffer, len);
 		} else {
 			OnData(buffer, len);
