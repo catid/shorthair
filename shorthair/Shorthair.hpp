@@ -69,7 +69,7 @@ namespace cat {
 namespace shorthair {
 
 
-class IShorthairInterface {
+class IShorthair {
 public:
 	// Called with the latest data packet from remote host
 	virtual void OnPacket(void *packet, int bytes) = 0;
@@ -82,7 +82,7 @@ public:
 };
 
 
-struct ShorthairSettings {
+struct Settings {
 	// Did currrent instance initiate the data flow?
 	// Each side of the channel needs to pick an opposite role to ensure that
 	// the encryption works properly.
@@ -101,7 +101,7 @@ struct ShorthairSettings {
 	int max_data_size;			// Maximum data size in bytes
 
 	// Implement this interface to allow Shorthair to send and deliver packets
-	IShorthairInterface *interface;	// Interface
+	IShorthair *interface;		// Interface
 };
 
 
@@ -113,7 +113,7 @@ class Shorthair {
 	Clock _clock;
 
 	// Settings object
-	ShorthairSettings _settings;
+	Settings _settings;
 
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator _allocator;
@@ -198,7 +198,7 @@ public:
 	}
 
 	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const ShorthairSettings &settings);
+	bool Initialize(const u8 key[SKEY_BYTES], const Settings &settings);
 
 	// Cleanup
 	void Finalize();

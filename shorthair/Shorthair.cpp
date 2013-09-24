@@ -1032,7 +1032,7 @@ void Shorthair::SendPong(int code_group) {
 //// Shorthair: Interface
 
 // On startup:
-bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const ShorthairSettings &settings) {
+bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	Finalize();
 
 	_clock.OnInitialize();
