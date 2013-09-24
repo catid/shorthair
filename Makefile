@@ -29,22 +29,22 @@ redundancy_o = Redundancy.o $(shared_o)
 # Release target (default)
 
 release : CFLAGS += $(OPTFLAGS)
-release : brook
+release : tester
 
 
 # Debug target
 
 debug : CFLAGS += $(DBGFLAGS)
-debug : brook
+debug : tester
 
 
-# brook executable
+# tester executable
 
-brook : $(tester_o)
-	$(CCPP) $(LIBS) -o brook $(tester_o)
+tester : $(tester_o)
+	$(CCPP) $(LIBS) -o tester $(tester_o)
 
 
-# brook objects
+# tester objects
 
 Tester.o : Tester.cpp
 	$(CCPP) $(CPFLAGS) -c Tester.cpp
@@ -137,5 +137,5 @@ Shorthair.o : shorthair/Shorthair.cpp
 .PHONY : clean
 
 clean :
-	-rm brook $(tester_o)
+	-rm tester $(tester_o)
 

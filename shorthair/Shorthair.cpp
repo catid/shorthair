@@ -754,8 +754,8 @@ void Shorthair::CalculateInterval() {
 	// upper bound for some cases of interest.
 
 	// Idea: Give it at least 100 milliseconds of buffering before a swap
-	if (delay < 100) {
-		delay = 100;
+	if (delay < MIN_CODE_DURATION) {
+		delay = MIN_CODE_DURATION;
 	}
 
 	_swap_interval = delay;
@@ -1130,7 +1130,7 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 	CAT_ENFORCE(data[0] != PONG_TYPE);
 	CAT_ENFORCE(1 + len <= _packet_buffer.size())
 
-		u8 *buffer = _packet_buffer.get();
+	u8 *buffer = _packet_buffer.get();
 
 	// Mark OOB
 	buffer[0] = 0x80;
