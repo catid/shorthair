@@ -30,8 +30,8 @@
 #define CAT_SHORTHAIR_DETAILS_HPP
 
 // Support projects
-#include "wirehair/Wirehair.hpp"
-#include "calico/Calico.hpp"
+#include "../wirehair/Wirehair.hpp"
+#include "../calico/Calico.hpp"
 
 // Support tools
 #include "Clock.hpp"

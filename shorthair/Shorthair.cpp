@@ -484,17 +484,17 @@ void EncoderThread::Process() {
 	// For each sent packet,
 	u8 *buffer = _encode_buffer.get();
 	for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
-		u16 size = p->id_or_len;
+		u16 len = p->len;
 
 		// Start each block off with the 16-bit size
-		*(u16*)buffer = getLE(size);
+		*(u16*)buffer = getLE(len);
 		buffer += 2;
 
 		// Add packet data in
-		memcpy(buffer, p->data + PROTOCOL_OVERHEAD, size);
+		memcpy(buffer, p->data + PROTOCOL_OVERHEAD, len);
 
 		// Zero the high bytes
-		CAT_CLR(buffer + size, chunk_size - size);
+		CAT_CLR(buffer + len, chunk_size - len);
 
 		// On to the next
 		buffer += chunk_size;
@@ -681,7 +681,7 @@ void CodeGroup::AddOriginal(Packet *p) {
 	const u32 id = p->id;
 
 	// Attempt fast O(1) insertion at end
-	if (tail && id > tail->id_or_len) {
+	if (tail && id > tail->id) {
 		// Insert at the end
 		tail->batch_next = p;
 		p->batch_next = 0;
@@ -823,7 +823,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 
 	for (int ii = 0; ii < block_count; ++ii) {
 		// If we already got that packet,
-		if (p && p->id_or_len == ii) {
+		if (p && p->id == ii) {
 			// Advance to next packet we have
 			p = (Packet*)p->batch_next;
 		} else {
@@ -909,7 +909,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	Packet *p = _allocator.AcquireObject<Packet>();
 
 	// Store ID in id/len field
-	p->id_or_len = id;
+	p->id = id;
 
 	if (id < block_count) {
 		// Store packet, prepending length.
@@ -961,7 +961,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				CAT_CLR(op->data + 2 + op_len, block_size - (op_len + 2));
 
 				// Feed decoder with data
-				r = _decoder.DecodeFeed(op->id_or_len, op->data);
+				r = _decoder.DecodeFeed(op->id, op->data);
 
 				// We should not succeed at decoding at this point
 				CAT_ENFORCE(r);
@@ -970,7 +970,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			// Add recovery packets
 			for (Packet *op = group->recovery_head; op; op = (Packet*)op->batch_next) {
 				// Feed decoder with data
-				r = _decoder.DecodeFeed(op->id_or_len, op->data);
+				r = _decoder.DecodeFeed(op->id, op->data);
 
 				// If decoding was successful,
 				if (!r) {
