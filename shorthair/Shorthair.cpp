@@ -349,6 +349,8 @@ int CalculateRedundancy(double p, int n, double Qtarget) {
 		++r;
 	}
 
+	cout << "Calculating redundancy = " << r << endl;
+
 	return r;
 }
 
@@ -398,6 +400,8 @@ void LossEstimator::Calculate() {
 		_loss = _min_loss;
 	}
 
+	cout << "Calculating loss = " << _loss << endl;
+
 	// TODO: Validate that this is a good predictor
 }
 
@@ -444,6 +448,8 @@ void DelayEstimator::Calculate() {
 	} else if (_delay > _max_delay) {
 		_delay = _max_delay;
 	}
+
+	cout << "Calculating delay = " << _delay << endl;
 
 	// TODO: Validate that this is a good predictor
 }
@@ -505,6 +511,8 @@ void EncoderThread::Process() {
 	CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
 
 	_next_block_id = block_count;
+
+	cout << "ENCODER DONE: blocks = " << block_count << endl;
 
 	// Avoid re-ordering writes by optimizer at compile time
 	CAT_FENCE_COMPILER;
@@ -599,6 +607,7 @@ void EncoderThread::EncodeQueued() {
 
 	// If N = 1,
 	if (_block_count <= 1) {
+		cout << "SPECIAL BLOCK COUNT = 1" << endl;
 		// Set up for special mode
 		_encoder_ready = true;
 		_group_block_size = _group_largest;
@@ -623,7 +632,9 @@ int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 	// Add block count
 	*(u16*)(buffer + 2) = getLE((u16)_group_count);
 
+	// If single packet,
 	if (_group_count == 1) {
+		cout << "GENERATE FROM SPECIAL BLOCK COUNT = 1" << endl;
 		// Copy original data directly
 		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
 	} else {
@@ -1124,11 +1135,17 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	_delay.Initialize(_settings.min_delay, _settings.max_delay);
 	_loss.Initialize(_settings.min_loss);
 
+	_redundant_count = 0;
+	_redundant_sent = 0;
+
 	_last_swap_time = 0;
 	_code_group = 0;
 
 	_last_group = 0;
 	_decoding = false;
+
+	_seen = 0;
+	_count = 0;
 
 	// Clear group data
 	CAT_OBJCLR(_groups);
