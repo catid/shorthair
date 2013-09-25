@@ -662,19 +662,16 @@ void CodeGroup::Close(ReuseAllocator &allocator) {
 	allocator.ReleaseBatch(BatchSet(head, tail));
 	allocator.ReleaseBatch(BatchSet(recovery_head, recovery_tail));
 
-	head = 0;
-	tail = 0;
-	recovery_head = 0;
-	recovery_tail = 0;
+	head = tail = 0;
+	recovery_head = recovery_tail = 0;
 }
 
 void CodeGroup::AddRecovery(Packet *p) {
 	// Insert at head
-	if (recovery_head) {
-		p->batch_next = recovery_head;
-	} else {
-		recovery_head = recovery_tail = p;
+	if (!recovery_tail) {
+		recovery_tail = p;
 	}
+	p->batch_next = recovery_head;
 	recovery_head = p;
 }
 
