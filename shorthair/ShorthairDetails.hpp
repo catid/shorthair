@@ -277,13 +277,27 @@ struct CodeGroup {
 
 class GroupFlags {
 	// 256 bits
+	u32 _open[8];
 	u32 _done[8];
 
 public:
 	CAT_INLINE void Clear() {
-		for (int ii = 0; ii < 8; ++ii) {
-			_done[ii] = ~(u32)0;
-		}
+		CAT_OBJCLR(_open);
+		CAT_OBJCLR(_done);
+	}
+
+	CAT_INLINE void SetOpen(const u8 group) {
+		_open[group >> 5] |= 1 << (group & 31);
+	}
+
+	CAT_INLINE void ResetOpen(const u8 group) {
+		_open[group >> 5] &= ~(1 << (group & 31));
+	}
+
+	CAT_INLINE bool IsOpen(const u8 group) {
+		// If bit is set return true
+		const u32 mask = 1 << (group & 31);
+		return (_open[group >> 5] & mask) != 0;
 	}
 
 	CAT_INLINE void SetDone(const u8 group) {
@@ -313,3 +327,4 @@ protected:
 } // namespace cat
 
 #endif // CAT_SHORTHAIR_DETAILS_HPP
+

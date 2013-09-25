@@ -16,6 +16,7 @@ class ZeroLossClient;
 class ZeroLossServer : IShorthair {
 	friend class ZeroLossClient;
 
+	u32 _sent;
 	Shorthair _codec;
 	ZeroLossClient *_client;
 	MersenneTwister *_prng;
@@ -39,6 +40,7 @@ public:
 class ZeroLossClient : IShorthair {
 	friend class ZeroLossServer;
 
+	u32 _received;
 	Shorthair _codec;
 	ZeroLossServer *_server;
 	MersenneTwister *_prng;
@@ -73,10 +75,12 @@ void ZeroLossServer::OnOOB(const u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if (_prng->GenerateUnbiased(1, 100) <= 3) {
+	if (_prng->GenerateUnbiased(1, 100) <= 10) {
 		//cout << "LOSS" << endl;
 		return;
 	}
+
+	++_sent;
 
 	_client->_codec.Recv(buffer, bytes);
 }
@@ -88,7 +92,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, const u8 *key, MersenneTwist
 	Settings settings;
 	settings.initiator = false;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.03;
+	settings.min_loss = 0.1;
 	settings.min_delay = 100;
 	settings.max_delay = 3000;
 	settings.max_data_size = 1350;
@@ -131,7 +135,7 @@ void ZeroLossServer::Tick() {
 
 // Called with the latest data packet from remote host
 void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
-	CAT_ENFORCE(bytes == 4);
+	CAT_ENFORCE(bytes >= 8);
 
 	u32 id = *(u32*)packet;
 	u32 len = *(u32*)(packet + 4);
@@ -145,7 +149,7 @@ void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 		CAT_ENFORCE(packet[jj] == (u8)prng.Generate());
 	}
 
-	//cout << id << endl;
+	++_received;
 }
 
 // Called with the latest OOB packet from remote host
@@ -165,7 +169,7 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 	Settings settings;
 	settings.initiator = true;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.03;
+	settings.min_loss = 0.1;
 	settings.min_delay = 100;
 	settings.max_delay = 3000;
 	settings.max_data_size = 1350;
@@ -180,6 +184,8 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 
 void ZeroLossClient::Tick() {
 	_codec.Tick();
+
+	cout << _received << " of " << _server->_sent << " : " << _received / (float)_server->_sent << endl;
 }
 
 

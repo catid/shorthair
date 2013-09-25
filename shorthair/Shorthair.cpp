@@ -726,42 +726,66 @@ void GroupFlags::ClearOpposite(const u8 group) {
 
 	word += 3;
 	word &= 7;
-	u32 open = ~_done[word];
-	while (open) {
-		// Find next bit index 0..31
-		u32 msb = BSR32(open);
+	u32 open = _open[word];
+	if (open) {
+		open &= ~_done[word];
+		while (open) {
+			// Find next bit index 0..31
+			u32 msb = BSR32(open);
 
-		// Calculate timeout group
-		u8 timeout_group = (word << 5) | msb;
+			// Calculate timeout group
+			u8 timeout_group = (word << 5) | msb;
 
-		OnGroupTimeout(timeout_group);
+			OnGroupTimeout(timeout_group);
 
-		// Clear the bit
-		open ^= 1 << msb;
+			// Clear the bit
+			open ^= 1 << msb;
+		}
 	}
 	_done[word] = 0;
+	_open[word] = 0;
 
 	++word;
 	word &= 7;
-	open = ~_done[word];
-	while (open) {
-		u32 msb = BSR32(open);
-		u8 timeout_group = (word << 5) | msb;
-		OnGroupTimeout(timeout_group);
-		open ^= 1 << msb;
+	open = _open[word];
+	if (open) {
+		open &= ~_done[word];
+		while (open) {
+			// Find next bit index 0..31
+			u32 msb = BSR32(open);
+
+			// Calculate timeout group
+			u8 timeout_group = (word << 5) | msb;
+
+			OnGroupTimeout(timeout_group);
+
+			// Clear the bit
+			open ^= 1 << msb;
+		}
 	}
 	_done[word] = 0;
+	_open[word] = 0;
 
 	++word;
 	word &= 7;
-	open = ~_done[word];
-	while (open) {
-		u32 msb = BSR32(open);
-		u8 timeout_group = (word << 5) | msb;
-		OnGroupTimeout(timeout_group);
-		open ^= 1 << msb;
+	open = _open[word];
+	if (open) {
+		open &= ~_done[word];
+		while (open) {
+			// Find next bit index 0..31
+			u32 msb = BSR32(open);
+
+			// Calculate timeout group
+			u8 timeout_group = (word << 5) | msb;
+
+			OnGroupTimeout(timeout_group);
+
+			// Clear the bit
+			open ^= 1 << msb;
+		}
 	}
 	_done[word] = 0;
+	_open[word] = 0;
 }
 
 
@@ -976,6 +1000,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 			group->Close(_allocator);
 			GroupFlags::SetDone(code_group);
+			GroupFlags::ResetOpen(code_group);
 			return;
 		}
 
@@ -984,6 +1009,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			// Close the group now
 			group->Close(_allocator);
 			GroupFlags::SetDone(code_group);
+			GroupFlags::ResetOpen(code_group);
 			return;
 		}
 	}
@@ -1063,6 +1089,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 					RecoverGroup(group);
 					group->Close(_allocator);
 					GroupFlags::SetDone(code_group);
+					GroupFlags::ResetOpen(code_group);
 					_decoding = false;
 					break;
 				}
@@ -1085,6 +1112,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				RecoverGroup(group);
 				group->Close(_allocator);
 				GroupFlags::SetDone(code_group);
+				GroupFlags::ResetOpen(code_group);
 				_decoding = false;
 			}
 		}
@@ -1300,7 +1328,7 @@ void Shorthair::Tick() {
 		// Start encoding queued data in another thread
 		_encoder.EncodeQueued();
 
-		cout << "New code group: N = " << N << " R = " << _redundant_count << endl;
+		//cout << "New code group: N = " << N << " R = " << _redundant_count << endl;
 	}
 }
 
