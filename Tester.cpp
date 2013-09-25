@@ -22,13 +22,13 @@ class ZeroLossServer : IShorthair {
 	u32 _next;
 
 	// Called with the latest data packet from remote host
-	virtual void OnPacket(void *packet, int bytes);
+	virtual void OnPacket(u8 *packet, int bytes);
 
 	// Called with the latest OOB packet from remote host
 	virtual void OnOOB(const u8 *packet, int bytes);
 
 	// Send raw data to remote host over UDP socket
-	virtual void SendData(void *buffer, int bytes);
+	virtual void SendData(u8 *buffer, int bytes);
 
 public:
 	void Accept(ZeroLossClient *client, const u8 *key, MersenneTwister *prng);
@@ -44,13 +44,13 @@ class ZeroLossClient : IShorthair {
 	MersenneTwister *_prng;
 
 	// Called with the latest data packet from remote host
-	virtual void OnPacket(void *packet, int bytes);
+	virtual void OnPacket(u8 *packet, int bytes);
 
 	// Called with the latest OOB packet from remote host
 	virtual void OnOOB(const u8 *packet, int bytes);
 
 	// Send raw data to remote host over UDP socket
-	virtual void SendData(void *buffer, int bytes);
+	virtual void SendData(u8 *buffer, int bytes);
 
 public:
 	void Connect(ZeroLossServer *server, MersenneTwister *prng);
@@ -61,7 +61,7 @@ public:
 //// ZeroLossServer
 
 // Called with the latest data packet from remote host
-void ZeroLossServer::OnPacket(void *packet, int bytes) {
+void ZeroLossServer::OnPacket(u8 *packet, int bytes) {
 	CAT_EXCEPTION();
 }
 
@@ -71,10 +71,10 @@ void ZeroLossServer::OnOOB(const u8 *packet, int bytes) {
 }
 
 // Send raw data to remote host over UDP socket
-void ZeroLossServer::SendData(void *buffer, int bytes) {
+void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
 	if (_prng->GenerateUnbiased(1, 100) <= 3) {
-		cout << "LOSS" << endl;
+		//cout << "LOSS" << endl;
 		return;
 	}
 
@@ -102,10 +102,25 @@ void ZeroLossServer::Accept(ZeroLossClient *client, const u8 *key, MersenneTwist
 void ZeroLossServer::Tick() {
 	// Send data at a steady rate
 
+	static const int MAX_SIZE = 1350;
+	u8 buffer[MAX_SIZE] = {0};
+
 	// >10 "MBPS" if packet payload is 1350 bytes
 	for (int ii = 0; ii < 16*5; ++ii) {
-		_codec.Send(&_next, 4);
-		++_next;
+		MersenneTwister prng;
+		prng.Initialize(_next);
+
+		*(u32*)buffer = _next++;
+
+		int len = _prng->GenerateUnbiased(4 + 4, MAX_SIZE);
+
+		*(u32*)(buffer + 4) = len;
+
+		for (int jj = 8; jj < len; ++jj) {
+			buffer[jj] = (u8)prng.Generate();
+		}
+
+		_codec.Send(buffer, len);
 	}
 
 	_codec.Tick();
@@ -115,12 +130,22 @@ void ZeroLossServer::Tick() {
 //// ZeroLossClient
 
 // Called with the latest data packet from remote host
-void ZeroLossClient::OnPacket(void *packet, int bytes) {
+void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 	CAT_ENFORCE(bytes == 4);
 
 	u32 id = *(u32*)packet;
+	u32 len = *(u32*)(packet + 4);
 
-	cout << id << endl;
+	CAT_ENFORCE(bytes == len);
+
+	MersenneTwister prng;
+	prng.Initialize(id);
+
+	for (int jj = 8; jj < len; ++jj) {
+		CAT_ENFORCE(packet[jj] == (u8)prng.Generate());
+	}
+
+	//cout << id << endl;
 }
 
 // Called with the latest OOB packet from remote host
@@ -129,7 +154,7 @@ void ZeroLossClient::OnOOB(const u8 *packet, int bytes) {
 }
 
 // Send raw data to remote host over UDP socket
-void ZeroLossClient::SendData(void *buffer, int bytes) {
+void ZeroLossClient::SendData(u8 *buffer, int bytes) {
 	_server->_codec.Recv(buffer, bytes);
 }
 

@@ -726,7 +726,7 @@ void GroupFlags::ClearOpposite(const u8 group) {
 
 	word += 3;
 	word &= 7;
-	u32 open = _open[word];
+	u32 open = ~_done[word];
 	while (open) {
 		// Find next bit index 0..31
 		u32 msb = BSR32(open);
@@ -739,31 +739,28 @@ void GroupFlags::ClearOpposite(const u8 group) {
 		// Clear the bit
 		open ^= 1 << msb;
 	}
-	_open[word] = 0;
 	_done[word] = 0;
 
 	++word;
 	word &= 7;
-	open = _open[word];
+	open = ~_done[word];
 	while (open) {
 		u32 msb = BSR32(open);
 		u8 timeout_group = (word << 5) | msb;
 		OnGroupTimeout(timeout_group);
 		open ^= 1 << msb;
 	}
-	_open[word] = 0;
 	_done[word] = 0;
 
 	++word;
 	word &= 7;
-	open = _open[word];
+	open = ~_done[word];
 	while (open) {
 		u32 msb = BSR32(open);
 		u8 timeout_group = (word << 5) | msb;
 		OnGroupTimeout(timeout_group);
 		open ^= 1 << msb;
 	}
-	_open[word] = 0;
 	_done[word] = 0;
 }
 
@@ -921,7 +918,6 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	// If group is not open yet,
 	if (!group->open) {
 		// Open group
-		GroupFlags::SetOpen(code_group);
 		group->Open(_clock.msec());
 	}
 
@@ -1123,6 +1119,7 @@ void Shorthair::SendPong(int code_group) {
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
+	cout << "Group lost!" << endl;
 	_groups[group].Close(_allocator);
 }
 
@@ -1195,7 +1192,7 @@ void Shorthair::Finalize() {
 
 // Send a new packet
 void Shorthair::Send(const void *data, int len) {
-	CAT_ENFORCE(len < _settings.max_data_size);
+	CAT_ENFORCE(len <= _settings.max_data_size);
 
 	Packet *p = _encoder.Queue(len);
 
