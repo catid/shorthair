@@ -549,6 +549,7 @@ Packet *EncoderThread::Queue(int len) {
 
 	// Allocate sent packet buffer
 	Packet *p = _allocator->AcquireObject<Packet>();
+	p->batch_next = 0;
 	p->len = len;
 
 	// If this new packet is larger than the previous ones,
@@ -564,7 +565,6 @@ Packet *EncoderThread::Queue(int len) {
 		_sent_head = p;
 	}
 	_sent_tail = p;
-	p->batch_next = 0;
 
 	++_block_count;
 
@@ -873,6 +873,8 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 void Shorthair::RecoverGroup(CodeGroup *group) {
 	// Allocate space for recovered packet
 	Packet *temp = _allocator.AcquireObject<Packet>();
+	temp->batch_next = 0;
+
 	int block_count = group->block_count;
 	u8 *data = temp->data;
 
@@ -992,6 +994,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// Packet that will contain this data
 	Packet *p = _allocator.AcquireObject<Packet>();
+	p->batch_next = 0;
 
 	// Store ID in id/len field
 	p->id = id;
