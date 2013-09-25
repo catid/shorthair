@@ -62,7 +62,6 @@ static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEA
 static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
 static const int BROOK_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
-static const u8 PAST_GROUP_THRESH = 127; // Group ID wrap threshold
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
 // OOB Pong packet type
