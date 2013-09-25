@@ -4,6 +4,8 @@ The Shorthair library uses Calico and Wirehair to provide low-latency loss-preve
 
 #### Pros:
 
++ Two-way communication over a single lossy channel.
+
 + You can dial the packet loss to any acceptable rate for your application.
 
 + It has a RTT*3/2 upper-bound delay for the data it protects, which is the lower-bound for recovering data with ARQ.
