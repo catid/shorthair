@@ -31,8 +31,8 @@ using namespace cat;
 
 void AntiReplayWindow::Initialize(u64 local_iv, u64 remote_iv)
 {
-	_local = local_iv;
-	_remote = remote_iv;
+	_init_local = _local = local_iv;
+	_init_remote = _remote = remote_iv;
 
 	CAT_OBJCLR(_bitmap);
 }

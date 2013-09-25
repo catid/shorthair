@@ -47,6 +47,8 @@
 #include "Mutex.hpp"
 
 #include <vector>
+#include <iostream>
+using namespace std;
 
 namespace cat {
 
@@ -390,7 +392,7 @@ public:
 	}
 
 	// Update stats when pings occur
-	CAT_INLINE void OnPing() {
+	CAT_INLINE void Calculate() {
 		// Calculate frozen stats
 		_total = _current_start - _frozen_start; // NOTE: Fixes wrapping
 		_seen = _frozen_count;

@@ -1156,7 +1156,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 // Send collected statistics
 void Shorthair::SendPong(int code_group) {
-	_stats.OnPing();
+	_stats.Calculate();
 
 	u8 pkt[PONG_SIZE + calico::Calico::OVERHEAD];
 
