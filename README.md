@@ -8,6 +8,8 @@ The Shorthair library uses Calico and Wirehair to provide low-latency loss-preve
 
 + It has a RTT*3/2 upper-bound delay for the data it protects, which is the lower-bound for recovering data with ARQ.
 
++ Calculates and generates precisely the amount of redundancy required to achieve the target loss rate.
+
 + It supports variable-length data packets.
 
 + Overhead is 16 bytes/packet.
@@ -15,6 +17,8 @@ The Shorthair library uses Calico and Wirehair to provide low-latency loss-preve
 + Provides data encryption and integrity validation.
 
 + Redundant packets are 18 bytes + size of largest packet in the code group.
+
++ Ruthlessly-optimized multi-threaded software.
 
 + Library has a clean platform-independent interface with minimal configuration required.
 
