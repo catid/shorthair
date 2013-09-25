@@ -6,7 +6,7 @@ The Shorthair library uses Calico and Wirehair to provide low-latency loss-preve
 
 + You can dial the packet loss to any acceptable rate for your application.
 
-+ It's got a bounded RTT*3/2 upper-bound delay for the data it protects, which is the lower-bound for recovering data with ARQ.
++ It has a RTT*3/2 upper-bound delay for the data it protects, which is the lower-bound for recovering data with ARQ.
 
 + It supports variable-length data packets.
 
