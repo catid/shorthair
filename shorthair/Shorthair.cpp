@@ -375,10 +375,11 @@ int CalculateRedundancy(double p, int n, double Qtarget) {
 
 //// LossEstimator
 
-void LossEstimator::Initialize(float min_loss) {
+void LossEstimator::Initialize(float min_loss, float max_loss) {
 	_index = 0;
 	_count = 0;
 	_min_loss = min_loss;
+	_max_loss = max_loss;
 	_loss = min_loss;
 }
 
@@ -413,6 +414,9 @@ void LossEstimator::Calculate() {
 		// Clamp value
 		if (_loss < _min_loss) {
 			_loss = _min_loss;
+		}
+		if (_loss > _max_loss) {
+			_loss = _max_loss;
 		}
 	} else {
 		_loss = _min_loss;
@@ -892,10 +896,12 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 				u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
 				u32 seen = getLE(*(u32*)(pkt + 2));
 				u32 count = getLE(*(u32*)(pkt + 2 + 4));
+				int rtt = _clock.msec() - _group_stamps[code_group];
+
+				cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << endl;
 
 				// Calculate RTT
-				int rtt = _clock.msec() - _group_stamps[code_group];
-				if (rtt > 0) {
+				if (rtt >= 0) {
 					// Compute updates
 					UpdateRTT(rtt);
 					UpdateLoss(seen, count);
@@ -1202,7 +1208,7 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	_encoder.Initialize(&_allocator);
 
 	_delay.Initialize(_settings.min_delay, _settings.max_delay);
-	_loss.Initialize(_settings.min_loss);
+	_loss.Initialize(_settings.min_loss, _settings.max_loss);
 
 	_redundant_count = 0;
 	_redundant_sent = 0;

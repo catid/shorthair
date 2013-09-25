@@ -80,11 +80,14 @@ class LossEstimator {
 	// Minimum allowed loss estimate
 	float _min_loss;
 
+	// Maximum allowed loss estimate
+	float _max_loss;
+
 	// Final massaged value:
 	float _loss;
 
 public:
-	void Initialize(float min_loss);
+	void Initialize(float min_loss, float max_loss);
 
 	void Insert(u32 seen, u32 count);
 

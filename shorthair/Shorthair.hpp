@@ -94,6 +94,9 @@ struct Settings {
 	// Good default: 0.03
 	float min_loss;				// [0..1] packetloss probability lower limit
 
+	// Good default: 0.5
+	float max_loss;				// [0..1] packetloss probability upper limit
+
 	// Good default: 100 ms ... 2000 ms
 	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
 
