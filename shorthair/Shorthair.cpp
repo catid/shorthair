@@ -303,7 +303,6 @@ using namespace std;
  * Out of band types are delivered to your callback.
  */
 
-
 /*
  * Normal Approximation to Bernoulli RV
  *
@@ -333,14 +332,35 @@ double NormalApproximation(int n, int r, double p) {
 }
 
 int CalculateRedundancy(double p, int n, double Qtarget) {
-	// TODO: Skip values of r to speed this up
-	int r = 0;
 	double q;
+	u32 r;
 
-	do {
-		++r;
+	// O(log(N))-time calculator
+
+	// Identify fast 2^i upper bound on required r
+	for (r = 1; r; r <<= 1) {
 		q = NormalApproximation(n, r, p);
-	} while (q > Qtarget);
+
+		// If this approximation is close,
+		if (q < Qtarget) {
+			break;
+		}
+	}
+
+	// If r-1 is also good,
+	if (NormalApproximation(n, r - 1, p) < Qtarget) {
+		// Trial-flip bits off from high to low:
+		for (u32 s = r-- >> 1; s > 0; s >>= 1) {
+			// Flip next bit down
+			u32 t = r ^ s;
+
+			// If this bit was not needed,
+			if (NormalApproximation(n, t, p) < Qtarget) {
+				// Shave it off
+				r = t;
+			}
+		}
+	}
 
 	++r;
 
@@ -1126,22 +1146,19 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// Clear opposite in number space
 	GroupFlags::ClearOpposite(code_group);
-
-	// TODO: Implement IV-based packet-loss estimator
 }
 
 // Send collected statistics
 void Shorthair::SendPong(int code_group) {
+	_stats.OnPing();
+
 	u8 pkt[PONG_SIZE + calico::Calico::OVERHEAD];
 
 	// Write packet
 	pkt[0] = (u8)code_group | 0x80;
 	pkt[1] = PONG_TYPE;
-	*(u32*)(pkt + 2) = getLE(_seen);
-	*(u32*)(pkt + 2 + 4) = getLE(_count);
-
-	// Reset statistics
-	_seen = _count = 0;
+	*(u32*)(pkt + 2) = getLE(_stats.GetSeen());
+	*(u32*)(pkt + 2 + 4) = getLE(_stats.GetTotal());
 
 	// Encrypt pong
 	int len = _cipher.Encrypt(pkt, PONG_SIZE, pkt, sizeof(pkt));
@@ -1196,8 +1213,7 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	_last_group = 0;
 	_decoding = false;
 
-	_seen = 0;
-	_count = 0;
+	_stats.Initialize();
 
 	// Clear group data
 	CAT_OBJCLR(_groups);
@@ -1334,7 +1350,7 @@ void Shorthair::Tick() {
 		// Start encoding queued data in another thread
 		_encoder.EncodeQueued();
 
-		//cout << "New code group: N = " << N << " R = " << _redundant_count << endl;
+		cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;
 	}
 }
 
@@ -1347,6 +1363,9 @@ void Shorthair::Recv(void *pkt, int len) {
 
 	// If a message was decoded,
 	if (len >= 2) {
+		// Update stats
+		_stats.Update((u32)iv);
+
 		// If out of band,
 		if (buffer[0] & 0x80) {
 			OnOOB(buffer, len);

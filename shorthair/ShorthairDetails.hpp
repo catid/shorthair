@@ -322,6 +322,87 @@ protected:
 };
 
 
+/*
+ * Loss Statistics from IV holes:
+ *
+ * As pings are received:
+ *          |<---delay-->|<---delay--->|<---delay--->|
+ * Bin 0 :  ^START       ^STOP         ^DELIVER
+ * Bin 1 :               ^START        ^STOP         ^DELIVER
+ * Bin 2 :                             ^START        ^STOP
+ * ...
+ *
+ * Bins have a given start and stop IV range.  IVs in these
+ * ranges are counted towards the bin.
+ *
+ * Whenever a ping is requested, a new bin is started, the last
+ * bin is frozen, and the last last bin is delivered.
+ *
+ * Minor wrinkle: IV values roll over after ~(u32)0, so we need
+ * to handle that.
+ */
+
+class LossStatistics {
+	u32 _frozen_start;	// frozen bin = [start, current)
+	u32 _frozen_count;
+
+	u32 _current_start;	// [start, inf)
+	u32 _current_count;
+
+	u32 _largest_iv;
+
+	// Stats from last period
+	u32 _seen, _total;
+
+public:
+	CAT_INLINE u32 GetSeen() {
+		return _seen;
+	}
+	CAT_INLINE u32 GetTotal() {
+		return _total;
+	}
+
+	// Reset
+	void Initialize() {
+		_frozen_start = 0;
+		_frozen_count = 0;
+		_current_start = 0;
+		_current_count = 0;
+		_largest_iv = 0;
+	}
+
+	// Update statistics
+	CAT_INLINE void Update(u32 iv) {
+		// Update largest IV seen
+		if ((s32)(iv - _largest_iv) > 0) {
+			_largest_iv = iv;
+		}
+
+		// Accumulate into a bin
+		if ((s32)(iv - _current_start) >= 0) {
+			_current_count++;
+		} else if ((s32)(iv - _frozen_start) >= 0) {
+			_frozen_count++;
+		}
+	}
+
+	// Update stats when pings occur
+	CAT_INLINE void OnPing() {
+		// Calculate frozen stats
+		_total = _current_start - _frozen_start; // NOTE: Fixes wrapping
+		_seen = _frozen_count;
+
+		// Freeze current
+		_frozen_start = _current_start;
+		_frozen_count = _current_count;
+
+		// Make new set current
+		_current_start = _largest_iv + 1;
+		_current_count = 0;
+	}
+};
+
+
 } // namespace shorthair
 
 } // namespace cat

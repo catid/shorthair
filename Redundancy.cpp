@@ -95,6 +95,49 @@ int CalculateApproximate(double p, int n, double Qtarget) {
 	return r;
 }
 
+int CalculateApproximateFast(double p, int n, double Qtarget) {
+	double q;
+	u32 r;
+
+	// O(log(N))-time calculator
+
+	// Identify fast 2^i upper bound on required r
+	for (r = 1; r; r <<= 1) {
+		q = NormalApproximation(n, r, p);
+
+		// If this approximation is close,
+		if (q < Qtarget) {
+			break;
+		}
+	}
+
+	// If r-1 is also good,
+	if (NormalApproximation(n, r - 1, p) < Qtarget) {
+		// Trial-flip bits off from high to low:
+		for (u32 s = r-- >> 1; s > 0; s >>= 1) {
+			// Flip next bit down
+			u32 t = r ^ s;
+
+			// If this bit was not needed,
+			if (NormalApproximation(n, t, p) < Qtarget) {
+				// Shave it off
+				r = t;
+			}
+		}
+	}
+
+	++r;
+
+	// Add one extra symbol to fix error of approximation
+	if (n * p < 10. || n * (1 - p) < 10.) {
+		++r;
+	}
+
+	CAT_ENFORCE(CalculateApproximate(p, n, Qtarget) == r);
+
+	return r;
+}
+
 /*
  * Incorporating the non-ideality of the code:
  *
@@ -516,7 +559,7 @@ int CalculateRedundancy(double p, int n, double Qtarget, bool force_approx = fal
 	// If in region where approximation works,
 	if ((n * p >= 10. &&
 		n * (1 - p) >= 10.) || force_approx) {
-		return CalculateApproximate(p, n, Qtarget);
+		return CalculateApproximateFast(p, n, Qtarget);
 	} else {
 		return CalculateExact(p, n, 0.97, Qtarget);
 	}

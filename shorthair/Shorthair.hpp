@@ -163,15 +163,14 @@ private:
 	//// Decoder
 	wirehair::Codec _decoder;
 
+	LossStatistics _stats;
+
 	// Is decoder active?
 	bool _decoding;
 	u8 _decoding_group;
 
 	// Next expected code group
 	u8 _last_group;
-
-	// Statistics since the last pong
-	u32 _seen, _count;
 
 	// Code groups
 	CodeGroup _groups[256];
