@@ -75,8 +75,7 @@ void ZeroLossServer::OnOOB(const u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if (_prng->GenerateUnbiased(1, 100) <= 30) {
-		//cout << "LOSS" << endl;
+	if ((_prng->Generate() & 15) < 1) {
 		return;
 	}
 
@@ -90,7 +89,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, const u8 *key, MersenneTwist
 	Settings settings;
 	settings.initiator = false;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.3;
+	settings.min_loss = 0.0624207;
 	settings.min_delay = 100;
 	settings.max_delay = 3000;
 	settings.max_data_size = 1350;
@@ -168,7 +167,7 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 	Settings settings;
 	settings.initiator = true;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.3;
+	settings.min_loss = 0.03;
 	settings.min_delay = 100;
 	settings.max_delay = 3000;
 	settings.max_data_size = 1350;

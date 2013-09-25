@@ -542,9 +542,9 @@ int CalculateRedundancy(double p, int n, double Qtarget, bool force_approx = fal
 int main() {
 	cout << "Redundancy Calculator" << endl;
 
-	double p = 0.03;
+	double p = 0.3;
 	int n = 5;
-	double Qtarget = 0.000001;
+	double Qtarget = 0.01;
 
 	for (int n = 1; n < 64000; ++n) {
 		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget) << endl;
