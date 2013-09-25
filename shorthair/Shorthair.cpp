@@ -992,6 +992,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (group->largest_id >= block_count) {
 		// If block count is special case 1,
 		if (block_count == 1) {
+			//cout << "ONE RECEIVE : " << (int)code_group << endl;
 			// If have not processed the original block yet,
 			if (group->original_seen == 0) {
 				// Process it immediately
@@ -1006,6 +1007,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 		// If we have received all original data without loss,
 		if (group->original_seen >= block_count) {
+			//cout << "ALL RECEIVE : " << (int)code_group << endl;
 			// Close the group now
 			group->Close(_allocator);
 			GroupFlags::SetDone(code_group);
@@ -1050,6 +1052,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// The block size will be the largest data chunk we have
 		const int block_size = group->largest_len;
 
+		//cout << "CAN RECOVER : " << (int)code_group << endl;
+
 		// If we are decoding this group for the first time,
 		if (!_decoding || _decoding_group != code_group) {
 			// Initialize the decoder
@@ -1088,6 +1092,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 					// Recover missing packets
 					RecoverGroup(group);
 					group->Close(_allocator);
+					//cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;
 					GroupFlags::SetDone(code_group);
 					GroupFlags::ResetOpen(code_group);
 					_decoding = false;
@@ -1111,6 +1116,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				// Recover missing packets
 				RecoverGroup(group);
 				group->Close(_allocator);
+				//cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;
 				GroupFlags::SetDone(code_group);
 				GroupFlags::ResetOpen(code_group);
 				_decoding = false;
