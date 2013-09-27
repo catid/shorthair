@@ -26,7 +26,7 @@ class ZeroLossServer : IShorthair {
 	virtual void OnPacket(u8 *packet, int bytes);
 
 	// Called with the latest OOB packet from remote host
-	virtual void OnOOB(const u8 *packet, int bytes);
+	virtual void OnOOB(u8 *packet, int bytes);
 
 	// Send raw data to remote host over UDP socket
 	virtual void SendData(u8 *buffer, int bytes);
@@ -49,7 +49,7 @@ class ZeroLossClient : IShorthair {
 	virtual void OnPacket(u8 *packet, int bytes);
 
 	// Called with the latest OOB packet from remote host
-	virtual void OnOOB(const u8 *packet, int bytes);
+	virtual void OnOOB(u8 *packet, int bytes);
 
 	// Send raw data to remote host over UDP socket
 	virtual void SendData(u8 *buffer, int bytes);
@@ -68,7 +68,7 @@ void ZeroLossServer::OnPacket(u8 *packet, int bytes) {
 }
 
 // Called with the latest OOB packet from remote host
-void ZeroLossServer::OnOOB(const u8 *packet, int bytes) {
+void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 	CAT_EXCEPTION();
 }
 
@@ -152,7 +152,7 @@ void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 }
 
 // Called with the latest OOB packet from remote host
-void ZeroLossClient::OnOOB(const u8 *packet, int bytes) {
+void ZeroLossClient::OnOOB(u8 *packet, int bytes) {
 	CAT_EXCEPTION();
 }
 

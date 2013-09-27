@@ -75,7 +75,7 @@ public:
 	virtual void OnPacket(u8 *packet, int bytes) = 0;
 
 	// Called with the latest OOB packet from remote host
-	virtual void OnOOB(const u8 *packet, int bytes) = 0;
+	virtual void OnOOB(u8 *packet, int bytes) = 0;
 
 	// Send raw data to remote host over UDP socket
 	virtual void SendData(u8 *buffer, int bytes) = 0;

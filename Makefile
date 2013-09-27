@@ -21,7 +21,7 @@ mt_o = Mutex.o Thread.o WaitableFlag.o
 shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o $(mt_o)
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
-shorthair_o = Shorthair.o $(wirehair_o) $(calico_o)
+shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
 tester_o = Tester.o $(shorthair_o) $(shared_o)
 redundancy_o = Redundancy.o $(shared_o)
 
@@ -130,6 +130,9 @@ VHash.o : calico/VHash.cpp
 
 Shorthair.o : shorthair/Shorthair.cpp
 	$(CCPP) $(CPFLAGS) -c shorthair/Shorthair.cpp
+
+ShorthairAPI.o : shorthair/ShorthairAPI.cpp
+	$(CCPP) $(CPFLAGS) -c shorthair/ShorthairAPI.cpp
 
 
 # Cleanup
