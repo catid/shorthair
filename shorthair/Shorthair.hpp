@@ -199,6 +199,14 @@ public:
 		Finalize();
 	}
 
+	CAT_INLINE float GetLoss() {
+		return _loss.Get();
+	}
+
+	CAT_INLINE int GetDelay() {
+		return _delay.Get();
+	}
+
 	// On startup:
 	bool Initialize(const u8 key[SKEY_BYTES], const Settings &settings);
 

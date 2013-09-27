@@ -124,3 +124,12 @@ extern "C" void SHSendOOB(SHCtx *ctx, const void *data, int len) {
 	}
 }
 
+extern "C" void SHGetStats(SHCtx *ctx, SHStats *stats) {
+	if (ctx && stats) {
+		SHContext *shctx = (SHContext*)ctx;
+
+		stats->loss = shctx->sh.GetLoss();
+		stats->delay = shctx->sh.GetDelay();
+	}
+}
+

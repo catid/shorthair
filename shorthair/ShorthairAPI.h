@@ -37,21 +37,98 @@ typedef void (*SHCall)(char *data, int len);
 
 typedef void *SHCtx;
 
-// Create/destroy Shorthair context
+/*
+ * SHCreate(key, key_len, initiator, max_data_len, on_data, on_oob, sendr)
+ *
+ * Create a Shorthair context object.
+ *
+ * Security parameters:
+ *
+ * key: 32-byte encryption key
+ * key_len: = 32
+ * initiator: Set to true if this is a client, or false if it is a server
+ *
+ * Networking parameters:
+ *
+ * max_data_len: Largest number of bytes that will be passed to SHSend()
+ * on_data: Callback for when data is decoded by Shorthair and passed to you
+ * on_oob: Callback for when your OOB data types arrive
+ * sendr: Callback for when Shorthair wants to send a packet
+ *
+ * Shorthair only performs math, so it does not have a UDP socket wrapper
+ * internally.  You will need to implement the callback interface to allow
+ * the library to transmit and receive data.
+ *
+ * Returns a Shorthair context object to pass to the other API functions.
+ */
 extern SHCtx *SHCreate(char *key, int key_len, bool initiator, int max_data_len, SHCall on_data, SHCall on_oob, SHCall sendr);
+
+/*
+ * SHDestroy(ctx)
+ *
+ * Destroy a Shorthair context object.
+ */
 extern void SHDestroy(SHCtx *ctx);
 
-// Call this function somewhat often (10-20ms interval)
+/*
+ * SHTick(ctx)
+ *
+ * Tick the Shorthair object.
+ *
+ * Call this function somewhat often (10-20ms interval).  The library uses this
+ * function to transmit the redundant data at a steady rate and will call sendr
+ * with each data packet to send.
+ */
 extern void SHTick(SHCtx *ctx);
 
-// Call this function when UDP data is received
+/*
+ * SHRecv(ctx, data, len)
+ *
+ * Pass received encoded data into Shorthair.
+ *
+ * When UDP data is received on the socket, it should be passed into this
+ * function to be decoded.  Recovered data will be passed to on_data, and
+ * OOB data will be passed to on_oob.
+ */
 extern void SHRecv(SHCtx *ctx, void *data, int len);
 
-// Call this function to send protected data
+/*
+ * SHSend(ctx, data, len)
+ *
+ * Submit data to be protected by Shorthair.  It will call sendr to transmit
+ * the encoded data packets.
+ */
 extern void SHSend(SHCtx *ctx, const void *data, int len);
 
-// Call this function to send unprotected data
+/*
+ * SHSendOOB(ctx, data, len)
+ *
+ * Submit data out-of-band.  This data is not protected by Shorthair but is
+ * still encrypted.  This is useful for time synchronization and other messages
+ * that are related to measuring actual round-trip-time without any error
+ * correction.
+ *
+ * The only reason I can think of for using this off-hand would be during
+ * time synchronization for an online game that sends timestamps on data to
+ * know when an event occurred on the originating computer.
+ *
+ * If you need to know the round-trip time, this is already provided in the
+ * statistics in the form of estimated one-way delay.
+ */
 extern void SHSendOOB(SHCtx *ctx, const void *data, int len);
+
+struct SHStats {
+	float loss;		// Probability [0..1] of a packet loss event without FEC.
+	int delay;		// Average one-way packet transmission delay.
+};
+
+/*
+ * SHGetStats(ctx, stats)
+ *
+ * Request filling an SHStats object with the latest statistics.
+ */
+extern void SHGetStats(SHCtx *ctx, SHStats *stats);
+
 
 #ifdef __cplusplus
 } // extern C
