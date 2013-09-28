@@ -6,7 +6,10 @@ using namespace std;
 #include "Platform.hpp"
 #include "Enforcer.hpp"
 #include "BitMath.hpp"
+#include "Clock.hpp"
 using namespace cat;
+
+Clock m_clock;
 
 /*
  * Top Level: Calculating Redundancy Required
@@ -556,13 +559,21 @@ int CalculateExact(double p, int n, double Pr, double Qtarget) {
 }
 
 int CalculateRedundancy(double p, int n, double Qtarget, bool force_approx = false) {
+	int r;
+
+	double t0 = m_clock.usec();
 	// If in region where approximation works,
 	if ((n * p >= 10. &&
 		n * (1 - p) >= 10.) || force_approx) {
-		return CalculateApproximateFast(p, n, Qtarget);
+		r = CalculateApproximateFast(p, n, Qtarget);
 	} else {
-		return CalculateExact(p, n, 0.97, Qtarget);
+		r = CalculateExact(p, n, 0.97, Qtarget);
 	}
+	double t1 = m_clock.usec();
+
+	cout << "(in " << t1 - t0 << " usec)";
+
+	return r;
 }
 
 /*
@@ -585,13 +596,16 @@ int CalculateRedundancy(double p, int n, double Qtarget, bool force_approx = fal
 int main() {
 	cout << "Redundancy Calculator" << endl;
 
-	double p = 0.3;
-	int n = 5;
-	double Qtarget = 0.01;
+	m_clock.OnInitialize();
+
+	double p = 0.6;
+	double Qtarget = 0.0001;
 
 	for (int n = 1; n < 64000; ++n) {
 		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget) << endl;
 		cout << "n = " << n << " r = " << CalculateRedundancy(p, n, Qtarget, true) << endl;
 	}
+
+	m_clock.OnFinalize();
 }
 

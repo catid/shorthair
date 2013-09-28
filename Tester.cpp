@@ -75,7 +75,7 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if ((_prng->Generate() & 15) < 1) {
+	if ((_prng->Generate() & 15) < 3) {
 		return;
 	}
 
