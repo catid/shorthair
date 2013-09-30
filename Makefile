@@ -17,13 +17,28 @@ LIBS = -lpthread
 
 
 # Object files
-mt_o = Mutex.o Thread.o WaitableFlag.o
+mt_o = Mutex.o Thread.o
 shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o $(mt_o)
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
 shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
 tester_o = Tester.o $(shorthair_o) $(shared_o)
 redundancy_o = Redundancy.o $(shared_o)
+
+# Library.ARM target
+
+library.arm : CCPP = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-g++
+library.arm : CPLUS_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
+library.arm : CC = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-gcc
+library.arm : C_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
+library.arm : library
+
+
+# Library target
+
+library : CFLAGS += $(OPTFLAGS)
+library : $(shorthair_o) $(shared_o)
+	ar rcs libshorthair.a $(shorthair_o) $(shared_o)
 
 
 # Release target (default)
@@ -70,9 +85,6 @@ Mutex.o : shared/Mutex.cpp
 
 Thread.o : shared/Thread.cpp
 	$(CCPP) $(CPFLAGS) -c shared/Thread.cpp
-
-WaitableFlag.o : shared/WaitableFlag.cpp
-	$(CCPP) $(CPFLAGS) -c shared/WaitableFlag.cpp
 
 
 # Shared objects

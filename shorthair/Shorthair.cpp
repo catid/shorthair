@@ -35,6 +35,8 @@ using namespace shorthair;
 #include <cmath>
 using namespace std;
 
+#define CAT_DUMP_SHORTHAIR
+
 #ifdef CAT_DUMP_SHORTHAIR
 #include <iostream>
 #include <iomanip>
@@ -482,7 +484,7 @@ void DelayEstimator::Calculate() {
 
 bool EncoderThread::Entrypoint(void *param) {
 	while (!_kill) {
-		_wake.Wait();
+		_wake_lock.Enter();
 		if (!_kill) {
 			Process();
 		}
@@ -492,7 +494,7 @@ bool EncoderThread::Entrypoint(void *param) {
 }
 
 void EncoderThread::Process() {
-	AutoMutex lock(_processing_lock);
+	_processing_lock.Enter();
 
 	// Byte per data chunk
 	int chunk_size = _group_largest;
@@ -514,6 +516,8 @@ void EncoderThread::Process() {
 	u8 *buffer = _encode_buffer.get();
 	for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
 		u16 len = p->len;
+
+		CAT_ENFORCE(len <= chunk_size);
 
 		// Start each block off with the 16-bit size
 		*(u16*)buffer = getLE(len);
@@ -539,6 +543,8 @@ void EncoderThread::Process() {
 	CAT_FENCE_COMPILER;
 
 	_encoder_ready = true;
+
+	_processing_lock.Leave();
 }
 
 void EncoderThread::Initialize(ReuseAllocator *allocator) {
@@ -554,6 +560,8 @@ void EncoderThread::Initialize(ReuseAllocator *allocator) {
 	_block_count = 0;
 	_sent_head = _sent_tail = 0;
 
+	_wake_lock.Enter();
+
 	StartThread();
 
 	_initialized = true;
@@ -563,7 +571,7 @@ void EncoderThread::Finalize() {
 	if (_initialized) {
 		_kill = true;
 
-		_wake.Set();
+		_wake_lock.Leave();
 
 		WaitForThread();
 
@@ -607,8 +615,7 @@ void EncoderThread::EncodeQueued() {
 		return;
 	}
 
-	// Hold processing lock to avoid calling this too fast
-	AutoMutex lock(_processing_lock);
+	_processing_lock.Enter();
 
 	// NOTE: After N = 1 case, next time encoding starts it will free the last one
 	FreeGarbage();
@@ -632,12 +639,16 @@ void EncoderThread::EncodeQueued() {
 		// Set up for special mode
 		_encoder_ready = true;
 		_group_block_size = _group_largest;
+
+		_processing_lock.Leave();	
 	} else {
 		// Flag encoder as being busy processing previous data
 		_encoder_ready = false;
 
+		_processing_lock.Leave();	
+
 		// Wake up the processing thread
-		_wake.Set();
+		_wake_lock.Leave();
 	}
 }
 

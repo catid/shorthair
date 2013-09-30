@@ -43,7 +43,6 @@
 
 // Multi-threading
 #include "Thread.hpp"
-#include "WaitableFlag.hpp"
 #include "Mutex.hpp"
 
 namespace cat {
@@ -153,7 +152,6 @@ class EncoderThread : public Thread {
 protected: // Shared data:
 	bool _initialized;
 	volatile bool _kill;
-	WaitableFlag _wake;
 
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator *_allocator;
@@ -170,8 +168,8 @@ protected: // Shared data:
 	// Cleared by main thread, set by encoder thread
 	volatile bool _encoder_ready;
 
-	// Lock to hold during processing to avoid reentrancy
-	Mutex _processing_lock;
+	// Locks to hold during processing to avoid reentrancy
+	Mutex _wake_lock, _processing_lock;
 
 	// Indicates previous group can be disposed
 	volatile bool _last_garbage;
