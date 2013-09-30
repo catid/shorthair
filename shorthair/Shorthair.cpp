@@ -35,10 +35,17 @@ using namespace shorthair;
 #include <cmath>
 using namespace std;
 
-// TODO: Remove
+#ifdef CAT_DUMP_SHORTHAIR
 #include <iostream>
 #include <iomanip>
 using namespace std;
+#endif
+
+#if defined(CAT_DUMP_SHORTHAIR)
+#define CAT_IF_DUMP(x) x
+#else
+#define CAT_IF_DUMP(x)
+#endif
 
 
 /*
@@ -903,7 +910,7 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 					UpdateLoss(seen, count);
 				}
 
-				cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;
+				CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;)
 			}
 			break;
 		default:
@@ -968,7 +975,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Open group
 		group->Open(_clock.msec());
 		GroupFlags::SetOpen(code_group);
-		//cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;
+		CAT_IF_DUMP(cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;)
 	}
 
 	u32 id = getLE(*(u16*)(pkt + 1));
@@ -1018,7 +1025,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (group->largest_id >= block_count) {
 		// If block count is special case 1,
 		if (block_count == 1) {
-			//cout << "ONE RECEIVE : " << (int)code_group << endl;
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
 			// If have not processed the original block yet,
 			if (group->original_seen == 0) {
 				// Process it immediately
@@ -1033,7 +1040,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 		// If we have received all original data without loss,
 		if (group->original_seen >= block_count) {
-			//cout << "ALL RECEIVE : " << (int)code_group << endl;
+			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 			// Close the group now
 			group->Close(_allocator);
 			GroupFlags::SetDone(code_group);
@@ -1078,7 +1085,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// The block size will be the largest data chunk we have
 		const int block_size = group->largest_len;
 
-		//cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl;
+		CAT_IF_DUMP(cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl;)
 
 		// If we are decoding this group for the first time,
 		if (!_decoding || _decoding_group != code_group) {
@@ -1118,7 +1125,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 					// Recover missing packets
 					RecoverGroup(group);
 					group->Close(_allocator);
-					//cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;
+					CAT_IF_DUMP(cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;)
 					GroupFlags::SetDone(code_group);
 					GroupFlags::ResetOpen(code_group);
 					_decoding = false;
@@ -1142,7 +1149,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				// Recover missing packets
 				RecoverGroup(group);
 				group->Close(_allocator);
-				cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;
+				CAT_IF_DUMP(cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;)
 				GroupFlags::SetDone(code_group);
 				GroupFlags::ResetOpen(code_group);
 				_decoding = false;
@@ -1176,7 +1183,7 @@ void Shorthair::SendPong(int code_group) {
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
-	//cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;
+	CAT_IF_DUMP(cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;)
 	_groups[group].Close(_allocator);
 }
 
@@ -1358,7 +1365,7 @@ void Shorthair::Tick() {
 		// Start encoding queued data in another thread
 		_encoder.EncodeQueued();
 
-		cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;
+		CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;)
 	}
 }
 

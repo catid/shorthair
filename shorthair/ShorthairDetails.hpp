@@ -46,10 +46,6 @@
 #include "WaitableFlag.hpp"
 #include "Mutex.hpp"
 
-#include <vector>
-#include <iostream>
-using namespace std;
-
 namespace cat {
 
 namespace shorthair {
