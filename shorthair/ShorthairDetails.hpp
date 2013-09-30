@@ -60,7 +60,7 @@ static const int SKEY_BYTES = 32;
 static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
 static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
 static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
-static const int BROOK_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
+static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 

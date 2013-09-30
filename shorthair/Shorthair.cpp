@@ -84,18 +84,11 @@ using namespace std;
  * and selecting between them for a single application.  And it all needs to be
  * rewritten when requirements change.
  *
- * Wirehair/RaptorQ improves on this, allowing us to use only as much bandwidth
- * as needed, covering any number of packets required.  These are "rateless"
- * codes that require an acceptable amount of performance loss compared to
- * RS-codes, and offering optimal use of the channel and lower latency compared
- * to ARQ-based approaches.
- *
- *
- * ==> Using UDP means we have to implement flow control right??
- *
- * Thankfully the data is constant-rate so there is no need for a
- * heavy-weight flow control algorithm.  We can just send data on a timer.
- * It doesn't need to be the same number of packets each time.
+ * Wirehair improves on this, allowing us to use only as much bandwidth as
+ * needed, covering any number of packets required.  These are "rateless" codes
+ * that require an acceptable amount of performance loss compared to RS-codes,
+ * and offering optimal use of the channel and lower latency compared to
+ * ARQ-based approaches.
  *
  *
  * ==> What are the design decisions for error correction codes?
@@ -974,6 +967,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (!group->open) {
 		// Open group
 		group->Open(_clock.msec());
+		GroupFlags::SetOpen(code_group);
+		//cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;
 	}
 
 	u32 id = getLE(*(u16*)(pkt + 1));
@@ -1083,7 +1078,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// The block size will be the largest data chunk we have
 		const int block_size = group->largest_len;
 
-		//cout << "CAN RECOVER : " << (int)code_group << endl;
+		//cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl;
 
 		// If we are decoding this group for the first time,
 		if (!_decoding || _decoding_group != code_group) {
@@ -1147,7 +1142,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				// Recover missing packets
 				RecoverGroup(group);
 				group->Close(_allocator);
-				//cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;
+				cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;
 				GroupFlags::SetDone(code_group);
 				GroupFlags::ResetOpen(code_group);
 				_decoding = false;
@@ -1181,7 +1176,7 @@ void Shorthair::SendPong(int code_group) {
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
-	cout << "Group lost!" << endl;
+	//cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;
 	_groups[group].Close(_allocator);
 }
 
@@ -1196,13 +1191,13 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 
 	_settings = settings;
 
-	if (_cipher.Initialize(key, "BROOK", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
+	if (_cipher.Initialize(key, "SHORTHAIR", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
 		return false;
 	}
 
 	CAT_ENFORCE(_settings.max_data_size <= MAX_CHUNK_SIZE);
 
-	const int buffer_size = BROOK_OVERHEAD + _settings.max_data_size;
+	const int buffer_size = SHORTHAIR_OVERHEAD + _settings.max_data_size;
 
 	// Allocate recovery packet workspace
 	_packet_buffer.resize(buffer_size);

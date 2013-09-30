@@ -32,6 +32,11 @@ class ZeroLossServer : IShorthair {
 	virtual void SendData(u8 *buffer, int bytes);
 
 public:
+	ZeroLossServer() {
+		_sent = 0;
+		_next = 0;
+	}
+
 	void Accept(ZeroLossClient *client, const u8 *key, MersenneTwister *prng);
 	void Tick();
 };
@@ -55,6 +60,10 @@ class ZeroLossClient : IShorthair {
 	virtual void SendData(u8 *buffer, int bytes);
 
 public:
+	ZeroLossClient() {
+		_received = 0;
+	}
+
 	void Connect(ZeroLossServer *server, MersenneTwister *prng);
 	void Tick();
 };
