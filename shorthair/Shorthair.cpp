@@ -335,6 +335,11 @@ int CalculateRedundancy(double p, int n, double Qtarget) {
 	double q;
 	u32 r;
 
+	// TODO: Merge this with upstream stuff on the laptop
+	if (n <= 0) {
+		return 0;
+	}
+
 	// O(log(N))-time calculator
 
 	// Identify fast 2^i upper bound on required r
@@ -898,14 +903,14 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 				u32 count = getLE(*(u32*)(pkt + 2 + 4));
 				int rtt = _clock.msec() - _group_stamps[code_group];
 
-				cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << endl;
-
 				// Calculate RTT
 				if (rtt >= 0) {
 					// Compute updates
 					UpdateRTT(rtt);
 					UpdateLoss(seen, count);
 				}
+
+				cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;
 			}
 			break;
 		default:
@@ -1254,15 +1259,17 @@ void Shorthair::Send(const void *data, int len) {
 
 	u8 *buffer = p->data;
 
+	const u8 packet_group = _code_group + 1;
+
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[0] = (_code_group + 1) & 0x7f;
+	buffer[0] = packet_group & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
 
 	// On first packet of a group,
 	if (block_count == 1) {
 		// Tag this new group with the start time
-		_group_stamps[_code_group + 1] = _clock.msec();
+		_group_stamps[packet_group] = _clock.msec();
 	}
 
 	// Add check symbol number

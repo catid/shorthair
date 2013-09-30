@@ -129,7 +129,6 @@ struct SHStats {
  */
 extern void SHGetStats(SHCtx *ctx, SHStats *stats);
 
-
 #ifdef __cplusplus
 } // extern C
 #endif

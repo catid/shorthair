@@ -75,7 +75,7 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if ((_prng->Generate() & 15) < 1) {
+	if ((_prng->Generate() & 15) < 4) {
 		return;
 	}
 
@@ -108,7 +108,7 @@ void ZeroLossServer::Tick() {
 	u8 buffer[MAX_SIZE] = {0};
 
 	// >10 "MBPS" if packet payload is 1350 bytes
-	for (int ii = 0; ii < 16*5; ++ii) {
+	for (int ii = 0; ii < 70; ++ii) {
 		MersenneTwister prng;
 		prng.Initialize(_next);
 
