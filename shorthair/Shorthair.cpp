@@ -672,7 +672,7 @@ int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 		// Copy original data directly
 		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
 	} else {
-		CAT_ENFORCE(_group_block_size == _encoder.Encode(block_id, buffer + 4));
+		CAT_ENFORCE(_group_block_size == (int)_encoder.Encode(block_id, buffer + 4));
 
 		FreeGarbage();
 	}
@@ -946,7 +946,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 
 	for (int ii = 0; ii < block_count; ++ii) {
 		// If we already got that packet,
-		if (p && p->id == ii) {
+		if (p && p->id == (u32)ii) {
 			// Advance to next packet we have
 			p = (Packet*)p->batch_next;
 		} else {
@@ -1286,7 +1286,7 @@ void Shorthair::Send(const void *data, int len) {
 	}
 
 	// Add check symbol number
-	*(u16*)(buffer + 1) = getLE(block_count - 1);
+	*(u16*)(buffer + 1) = getLE16(block_count - 1);
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
