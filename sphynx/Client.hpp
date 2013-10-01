@@ -30,97 +30,14 @@
 #define CAT_SPHYNX_CLIENT_HPP
 
 #include "shorthair/Shorthair.hpp"
+#include "cymric/Cymric.hpp"
+#include "tabby/Tabby.hpp"
 
 /*
  * Sphynx Network Client
  */
 
 namespace cat {
-
-namespace cymric {
-
-	class Generator {
-		bool _initialized;
-
-	public:
-		CAT_INLINE Generator() {
-			_initialized = false;
-		}
-
-		CAT_INLINE virtual ~Generator() {
-			Finalize();
-		}
-
-		void Initialize() {
-			Finalize();
-
-			_initialized = true;
-		}
-
-		void Finalize() {
-			if (_initialized) {
-				_initialized = false;
-			}
-		}
-
-		void Generate(u8 *buffer, int len) {
-			CAT_ENFORCE(_initialized);
-
-			for (int ii = 0; ii < len; ++ii) {
-				buffer[ii] = 3; // Number chosen at random
-			}
-		}
-	};
-
-} // namespace cymric
-
-namespace tabby {
-
-	struct PublicKey {
-		u8 data[64];		// Public point affine (x,y)
-	};
-
-	struct Hello {
-		u8 data[64 + 32];	// Client public point affine (x,y) + random number
-	};
-
-	class Server {
-		PublicKey _public_key;
-		cymric::Generator _generator;
-
-	public:
-		Server() {
-		}
-		virtual ~Server() {
-		}
-	};
-
-	class Client {
-		PublicKey _server_public_key;
-		PrivateKey _private_key;
-		cymric::Generator _generator;
-
-	public:
-		Client() {
-		}
-		virtual ~Client() {
-		}
-
-		void Initialize(PublicKey &server_public_key) {
-			_server_public_key = server_public_key;
-
-			_generator.Initialize();
-
-			_generator.Generate(
-		}
-
-		void FillHello(Hello *hello) {
-			hello->data;
-		}
-	};
-
-} // namespace tabby
-
 
 namespace sphynx {
 
