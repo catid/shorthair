@@ -29,19 +29,38 @@
 #include "Tabby.hpp"
 using namespace cat;
 using namespace tabby;
+using namespace snowshoe;
 
 
 //// Client
 
 void Client::Initialize(PublicKey &server_public_key) {
+	Finalize();
+
 	_server_public_key = server_public_key;
 
 	_generator.Initialize();
 
-	_generator.Generate(
+	_generator.Generate(_client_private, sizeof(_client_private));
+	_generator.Generate(_client_nonce, sizeof(_client_nonce));
+
+	Snowshoe::MulG(_client_private, _client_public);
+
+	_initialized = true;
 }
 
 void Client::FillHello(Hello *hello) {
 	//hello->data;
+}
+
+void Client::Finalize() {
+	if (_initialized) {
+		CAT_SECURE_CLR(_client_private, sizeof(_client_private));
+		CAT_SECURE_CLR(_client_nonce, sizeof(_client_nonce));
+		CAT_SECURE_CLR(_client_public, sizeof(_client_public));
+		CAT_SECURE_CLR(_server_public, sizeof(_server_public));
+
+		_initialized = false;
+	}
 }
 

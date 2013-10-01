@@ -38,9 +38,14 @@ namespace snowshoe {
 
 class Snowshoe {
 public:
-	static void Mul(const u32 k[8], ecpt &P, ecpt &R);
+	static void MulG(const u32 k[8], ecpt &R);
+
+	static void Mul(const u32 k[8], const ecpt &P, ecpt &R);
 
 	static void SiMul(const u32 a[8], const ecpt &P, const u32 b[8], const ecpt &Q, ecpt &R);
+
+	static void Pack(const ecpt &P, u8 buffer[64]);
+	static void Unpack(const u8 buffer[64], ecpt &P);
 };
 
 

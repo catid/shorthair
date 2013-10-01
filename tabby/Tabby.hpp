@@ -30,18 +30,56 @@
 #define CAT_TABBY_HPP
 
 #include "Platform.hpp"
+#include "snowshoe/Snowshoe.hpp"
 
 namespace cat {
 
 namespace tabby {
 
 
-struct PublicKey {
-	u8 data[64];		// Public point affine (x,y)
+struct Hello {
+	/*
+	 * client -> server (102 bytes)
+	 *
+	 * The client sends this packet to request a connection.
+	 *
+	 * Schema:
+	 *
+	 * UID(2 bytes) = FFFFh
+	 * Cookie(4 bytes) = 0 by default
+	 * Client Public Key(64 bytes)
+	 * Client Nonce(32 bytes)
+	 */
+	u8 data[2 + 4 + 64 + 32];
 };
 
-struct Hello {
-	u8 data[64 + 32];	// Client public point affine (x,y) + random number
+struct Cookie {
+	/*
+	 * server -> client (4 bytes)
+	 *
+	 * The server responds with a Cookie if it is under load and would like to
+	 * reduce the impact of a potential DoS attack by insuring that connections
+	 * originate from actual clients.
+	 *
+	 * Schema:
+	 *
+	 * Cookie(4 bytes)
+	 */
+	u8 data[4];
+};
+
+struct Challenge {
+	/*
+	 * server -> client (109 bytes)
+	 *
+	 * The server responds with a Challenge to accept a connection request.
+	 *
+	 * Server Ephemeral Public Key(64 bytes)
+	 * Server Nonce(32 bytes)
+	 * Server Identity Proof(32 bytes)
+	 * First Encrypted Data(2 bytes + 11 bytes overhead) = UID
+	 */
+	u8 data[64 + 32 + 32 + 11 + 2];
 };
 
 
@@ -62,27 +100,24 @@ public:
 //// Client
 
 class Client {
-	PublicKey _server_public_key;
-	PrivateKey _private_key;
+	bool _initialized;
+	u32 _client_private[8];
+	u8 _client_nonce[32];
+	ecpt _client_public, _server_public;
 	cymric::Generator _generator;
 
 public:
 	Client() {
+		_initialized = false;
 	}
 	virtual ~Client() {
+		Finalize();
 	}
 
-	void Initialize(PublicKey &server_public_key) {
-		_server_public_key = server_public_key;
+	void Initialize(PublicKey &server_public_key);
+	void Finalize();
 
-		_generator.Initialize();
-
-		_generator.Generate(
-	}
-
-	void FillHello(Hello *hello) {
-		hello->data;
-	}
+	void FillHello(Hello *hello);
 };
 
 
