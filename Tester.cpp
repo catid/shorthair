@@ -32,6 +32,11 @@ class ZeroLossServer : IShorthair {
 	virtual void SendData(u8 *buffer, int bytes);
 
 public:
+	ZeroLossServer() {
+		_sent = 0;
+		_next = 0;
+	}
+
 	void Accept(ZeroLossClient *client, const u8 *key, MersenneTwister *prng);
 	void Tick();
 };
@@ -55,6 +60,10 @@ class ZeroLossClient : IShorthair {
 	virtual void SendData(u8 *buffer, int bytes);
 
 public:
+	ZeroLossClient() {
+		_received = 0;
+	}
+
 	void Connect(ZeroLossServer *server, MersenneTwister *prng);
 	void Tick();
 };
@@ -75,7 +84,7 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if ((_prng->Generate() & 15) < 3) {
+	if ((_prng->Generate() & 15) < 7) {
 		return;
 	}
 
@@ -108,7 +117,7 @@ void ZeroLossServer::Tick() {
 	u8 buffer[MAX_SIZE] = {0};
 
 	// >10 "MBPS" if packet payload is 1350 bytes
-	for (int ii = 0; ii < 16*5; ++ii) {
+	for (int ii = 0; ii < 70; ++ii) {
 		MersenneTwister prng;
 		prng.Initialize(_next);
 

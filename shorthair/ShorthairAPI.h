@@ -61,7 +61,8 @@ typedef void *SHCtx;
  *
  * Returns a Shorthair context object to pass to the other API functions.
  */
-extern SHCtx *SHCreate(char *key, int key_len, bool initiator, int max_data_len, SHCall on_data, SHCall on_oob, SHCall sendr);
+extern SHCtx *SHCreate(char *key, int key_len, bool initiator, int max_data_len,
+		SHCall on_data, SHCall on_oob, SHCall sendr);
 
 /*
  * SHDestroy(ctx)
@@ -128,7 +129,6 @@ struct SHStats {
  * Request filling an SHStats object with the latest statistics.
  */
 extern void SHGetStats(SHCtx *ctx, SHStats *stats);
-
 
 #ifdef __cplusplus
 } // extern C

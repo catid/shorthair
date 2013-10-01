@@ -43,12 +43,7 @@
 
 // Multi-threading
 #include "Thread.hpp"
-#include "WaitableFlag.hpp"
 #include "Mutex.hpp"
-
-#include <vector>
-#include <iostream>
-using namespace std;
 
 namespace cat {
 
@@ -60,7 +55,7 @@ static const int SKEY_BYTES = 32;
 static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
 static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
 static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
-static const int BROOK_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
+static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
@@ -157,7 +152,6 @@ class EncoderThread : public Thread {
 protected: // Shared data:
 	bool _initialized;
 	volatile bool _kill;
-	WaitableFlag _wake;
 
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator *_allocator;
@@ -174,8 +168,8 @@ protected: // Shared data:
 	// Cleared by main thread, set by encoder thread
 	volatile bool _encoder_ready;
 
-	// Lock to hold during processing to avoid reentrancy
-	Mutex _processing_lock;
+	// Locks to hold during processing to avoid reentrancy
+	Mutex _wake_lock, _processing_lock;
 
 	// Indicates previous group can be disposed
 	volatile bool _last_garbage;

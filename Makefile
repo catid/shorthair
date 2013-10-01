@@ -17,12 +17,14 @@ LIBS = -lpthread
 
 
 # Object files
-mt_o = Mutex.o Thread.o WaitableFlag.o
-shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o $(mt_o)
+
+mt_o = Mutex.o Thread.o
+shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o memxor.o
 shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
-tester_o = Tester.o $(shorthair_o) $(shared_o)
+tester_o = Tester.o $(shorthair_o) $(shared_o) $(mt_o)
+server_o = Server.o $(shorthair_o) $(shared_o) $(mt_o)
 redundancy_o = Redundancy.o $(shared_o)
 
 
@@ -38,8 +40,33 @@ debug : CFLAGS += $(DBGFLAGS)
 debug : tester
 
 
+# Library.ARM target
+
+library.arm : CCPP = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-g++
+library.arm : CPLUS_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
+library.arm : CC = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-gcc
+library.arm : C_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
+library.arm : library
+
+
+# Library target
+
+library : CFLAGS += -O3 -fomit-frame-pointer -funroll-loops -D_POSIX_THREADS
+library : $(shorthair_o) $(shared_o)
+	ar rcs libshorthair.a $(shorthair_o) $(shared_o)
+
+
+# Server target
+
+server : CFLAGS += $(OPTFLAGS)
+server : LIBS += -luv
+server : $(server_o)
+	$(CCPP) $(LIBS) -o server $(server_o)
+
+
 # tester executable
 
+tester : CFLAGS += -DCAT_CLOCK_EXTRA
 tester : $(tester_o)
 	$(CCPP) $(LIBS) -o tester $(tester_o)
 
@@ -70,9 +97,6 @@ Mutex.o : shared/Mutex.cpp
 
 Thread.o : shared/Thread.cpp
 	$(CCPP) $(CPFLAGS) -c shared/Thread.cpp
-
-WaitableFlag.o : shared/WaitableFlag.cpp
-	$(CCPP) $(CPFLAGS) -c shared/WaitableFlag.cpp
 
 
 # Shared objects
@@ -133,6 +157,12 @@ Shorthair.o : shorthair/Shorthair.cpp
 
 ShorthairAPI.o : shorthair/ShorthairAPI.cpp
 	$(CCPP) $(CPFLAGS) -c shorthair/ShorthairAPI.cpp
+
+
+# Server objects
+
+Server.o : Server.cpp
+	$(CCPP) $(CPFLAGS) -c Server.cpp
 
 
 # Cleanup

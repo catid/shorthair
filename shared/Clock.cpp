@@ -168,6 +168,9 @@ double Clock::usec()
 }
 
 
+#ifdef CAT_CLOCK_EXTRA
+
+
 void Clock::sleep(u32 milliseconds)
 {
 #if defined(CAT_OS_WINDOWS)
@@ -407,3 +410,6 @@ u32 Clock::MeasureClocks(int iterations, void (*FunctionPtr)())
 
     return median;
 }
+
+#endif // CAT_CLOCK_EXTRA
+

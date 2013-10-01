@@ -35,10 +35,19 @@ using namespace shorthair;
 #include <cmath>
 using namespace std;
 
-// TODO: Remove
+#define CAT_DUMP_SHORTHAIR
+
+#ifdef CAT_DUMP_SHORTHAIR
 #include <iostream>
 #include <iomanip>
 using namespace std;
+#endif
+
+#if defined(CAT_DUMP_SHORTHAIR)
+#define CAT_IF_DUMP(x) x
+#else
+#define CAT_IF_DUMP(x)
+#endif
 
 
 /*
@@ -84,18 +93,11 @@ using namespace std;
  * and selecting between them for a single application.  And it all needs to be
  * rewritten when requirements change.
  *
- * Wirehair/RaptorQ improves on this, allowing us to use only as much bandwidth
- * as needed, covering any number of packets required.  These are "rateless"
- * codes that require an acceptable amount of performance loss compared to
- * RS-codes, and offering optimal use of the channel and lower latency compared
- * to ARQ-based approaches.
- *
- *
- * ==> Using UDP means we have to implement flow control right??
- *
- * Thankfully the data is constant-rate so there is no need for a
- * heavy-weight flow control algorithm.  We can just send data on a timer.
- * It doesn't need to be the same number of packets each time.
+ * Wirehair improves on this, allowing us to use only as much bandwidth as
+ * needed, covering any number of packets required.  These are "rateless" codes
+ * that require an acceptable amount of performance loss compared to RS-codes,
+ * and offering optimal use of the channel and lower latency compared to
+ * ARQ-based approaches.
  *
  *
  * ==> What are the design decisions for error correction codes?
@@ -334,6 +336,11 @@ double NormalApproximation(int n, int r, double p) {
 int CalculateApproximate(double p, int n, double Qtarget) {
 	double q;
 	u32 r;
+
+	// TODO: Merge this with upstream stuff on the laptop
+	if (n <= 0) {
+		return 0;
+	}
 
 	// O(log(N))-time calculator
 
@@ -905,7 +912,7 @@ void DelayEstimator::Calculate() {
 
 bool EncoderThread::Entrypoint(void *param) {
 	while (!_kill) {
-		_wake.Wait();
+		_wake_lock.Enter();
 		if (!_kill) {
 			Process();
 		}
@@ -915,7 +922,7 @@ bool EncoderThread::Entrypoint(void *param) {
 }
 
 void EncoderThread::Process() {
-	AutoMutex lock(_processing_lock);
+	_processing_lock.Enter();
 
 	// Byte per data chunk
 	int chunk_size = _group_largest;
@@ -937,6 +944,8 @@ void EncoderThread::Process() {
 	u8 *buffer = _encode_buffer.get();
 	for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
 		u16 len = p->len;
+
+		CAT_ENFORCE(len <= chunk_size);
 
 		// Start each block off with the 16-bit size
 		*(u16*)buffer = getLE(len);
@@ -962,6 +971,8 @@ void EncoderThread::Process() {
 	CAT_FENCE_COMPILER;
 
 	_encoder_ready = true;
+
+	_processing_lock.Leave();
 }
 
 void EncoderThread::Initialize(ReuseAllocator *allocator) {
@@ -977,6 +988,8 @@ void EncoderThread::Initialize(ReuseAllocator *allocator) {
 	_block_count = 0;
 	_sent_head = _sent_tail = 0;
 
+	_wake_lock.Enter();
+
 	StartThread();
 
 	_initialized = true;
@@ -986,7 +999,7 @@ void EncoderThread::Finalize() {
 	if (_initialized) {
 		_kill = true;
 
-		_wake.Set();
+		_wake_lock.Leave();
 
 		WaitForThread();
 
@@ -1030,8 +1043,7 @@ void EncoderThread::EncodeQueued() {
 		return;
 	}
 
-	// Hold processing lock to avoid calling this too fast
-	AutoMutex lock(_processing_lock);
+	_processing_lock.Enter();
 
 	// NOTE: After N = 1 case, next time encoding starts it will free the last one
 	FreeGarbage();
@@ -1055,12 +1067,16 @@ void EncoderThread::EncodeQueued() {
 		// Set up for special mode
 		_encoder_ready = true;
 		_group_block_size = _group_largest;
+
+		_processing_lock.Leave();	
 	} else {
 		// Flag encoder as being busy processing previous data
 		_encoder_ready = false;
 
+		_processing_lock.Leave();	
+
 		// Wake up the processing thread
-		_wake.Set();
+		_wake_lock.Leave();
 	}
 }
 
@@ -1084,7 +1100,7 @@ int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
 		// Copy original data directly
 		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
 	} else {
-		CAT_ENFORCE(_group_block_size == _encoder.Encode(block_id, buffer + 4));
+		CAT_ENFORCE(_group_block_size == (int)_encoder.Encode(block_id, buffer + 4));
 
 		FreeGarbage();
 	}
@@ -1326,14 +1342,14 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 				u32 count = getLE(*(u32*)(pkt + 2 + 4));
 				int rtt = _clock.msec() - _group_stamps[code_group];
 
-				cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << endl;
-
 				// Calculate RTT
 				if (rtt >= 0) {
 					// Compute updates
 					UpdateRTT(rtt);
 					UpdateLoss(seen, count);
 				}
+
+				CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;)
 			}
 			break;
 		default:
@@ -1358,7 +1374,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 
 	for (int ii = 0; ii < block_count; ++ii) {
 		// If we already got that packet,
-		if (p && p->id == ii) {
+		if (p && p->id == (u32)ii) {
 			// Advance to next packet we have
 			p = (Packet*)p->batch_next;
 		} else {
@@ -1397,6 +1413,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (!group->open) {
 		// Open group
 		group->Open(_clock.msec());
+		GroupFlags::SetOpen(code_group);
+		CAT_IF_DUMP(cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;)
 	}
 
 	u32 id = getLE(*(u16*)(pkt + 1));
@@ -1446,7 +1464,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (group->largest_id >= block_count) {
 		// If block count is special case 1,
 		if (block_count == 1) {
-			//cout << "ONE RECEIVE : " << (int)code_group << endl;
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
 			// If have not processed the original block yet,
 			if (group->original_seen == 0) {
 				// Process it immediately
@@ -1461,7 +1479,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 		// If we have received all original data without loss,
 		if (group->original_seen >= block_count) {
-			//cout << "ALL RECEIVE : " << (int)code_group << endl;
+			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 			// Close the group now
 			group->Close(_allocator);
 			GroupFlags::SetDone(code_group);
@@ -1506,7 +1524,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// The block size will be the largest data chunk we have
 		const int block_size = group->largest_len;
 
-		//cout << "CAN RECOVER : " << (int)code_group << endl;
+		CAT_IF_DUMP(cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl;)
 
 		// If we are decoding this group for the first time,
 		if (!_decoding || _decoding_group != code_group) {
@@ -1546,7 +1564,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 					// Recover missing packets
 					RecoverGroup(group);
 					group->Close(_allocator);
-					//cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;
+					CAT_IF_DUMP(cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;)
 					GroupFlags::SetDone(code_group);
 					GroupFlags::ResetOpen(code_group);
 					_decoding = false;
@@ -1570,7 +1588,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 				// Recover missing packets
 				RecoverGroup(group);
 				group->Close(_allocator);
-				//cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;
+				CAT_IF_DUMP(cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;)
 				GroupFlags::SetDone(code_group);
 				GroupFlags::ResetOpen(code_group);
 				_decoding = false;
@@ -1604,7 +1622,7 @@ void Shorthair::SendPong(int code_group) {
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
-	cout << "Group lost!" << endl;
+	CAT_IF_DUMP(cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;)
 	_groups[group].Close(_allocator);
 }
 
@@ -1619,13 +1637,13 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 
 	_settings = settings;
 
-	if (_cipher.Initialize(key, "BROOK", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
+	if (_cipher.Initialize(key, "SHORTHAIR", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
 		return false;
 	}
 
 	CAT_ENFORCE(_settings.max_data_size <= MAX_CHUNK_SIZE);
 
-	const int buffer_size = BROOK_OVERHEAD + _settings.max_data_size;
+	const int buffer_size = SHORTHAIR_OVERHEAD + _settings.max_data_size;
 
 	// Allocate recovery packet workspace
 	_packet_buffer.resize(buffer_size);
@@ -1682,19 +1700,21 @@ void Shorthair::Send(const void *data, int len) {
 
 	u8 *buffer = p->data;
 
+	const u8 packet_group = _code_group + 1;
+
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[0] = (_code_group + 1) & 0x7f;
+	buffer[0] = packet_group & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
 
 	// On first packet of a group,
 	if (block_count == 1) {
 		// Tag this new group with the start time
-		_group_stamps[_code_group + 1] = _clock.msec();
+		_group_stamps[packet_group] = _clock.msec();
 	}
 
 	// Add check symbol number
-	*(u16*)(buffer + 1) = getLE(block_count - 1);
+	*(u16*)(buffer + 1) = getLE16(block_count - 1);
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
@@ -1784,7 +1804,7 @@ void Shorthair::Tick() {
 		// Start encoding queued data in another thread
 		_encoder.EncodeQueued();
 
-		cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;
+		CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;)
 	}
 }
 

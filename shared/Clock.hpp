@@ -55,11 +55,15 @@ public:
 	double usec();				// Timestamp in microseconds
 	static u32 cycles();		// Timestamp in cycles
 
+#ifdef CAT_CLOCK_EXTRA
+
     static std::string format(const char *format_string);
 
     static void sleep(u32 milliseconds);
 
     static u32 MeasureClocks(int iterations, void (*FunctionPtr)());
+
+#endif
 };
 
 
