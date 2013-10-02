@@ -31,6 +31,12 @@
 
 #include "Platform.hpp"
 
+/*
+ * Snowshoe
+ *
+ * Elliptic Curve Math
+ */
+
 namespace cat {
 
 namespace snowshoe {
@@ -38,14 +44,24 @@ namespace snowshoe {
 
 class Snowshoe {
 public:
-	static void MulG(const u32 k[8], ecpt &R);
+	static const u8 SCALAR_SIZE = 32;
+	static const int POINT_SIZE = 64;
 
-	static void Mul(const u32 k[8], const ecpt &P, ecpt &R);
+	struct dude {
+		u32 k[8];
+	};
 
-	static void SiMul(const u32 a[8], const ecpt &P, const u32 b[8], const ecpt &Q, ecpt &R);
+	static void MulG(const dude &k, ecpt &R);
+	static void Mul(const dude &k, const ecpt &P, ecpt &R);
+	static void SiMul(const dude &a, const ecpt &P, const dude &b, const ecpt &Q, ecpt &R);
 
-	static void Pack(const ecpt &P, u8 buffer[64]);
-	static void Unpack(const u8 buffer[64], ecpt &P);
+	static void Affine(ecpt &P);
+
+	// Returns false if point is invalid input
+	static bool Scrub(ecpt &P);
+
+	static void Pack(const ecpt &P, u8 buffer[POINT_SIZE]);
+	static void Unpack(const u8 buffer[POINT_SIZE], ecpt &P);
 };
 
 

@@ -36,15 +36,15 @@ namespace cat {
 namespace cymric {
 
 
-class Generator {
+class Cymric {
 	bool _initialized;
 
 public:
-	CAT_INLINE Generator() {
+	CAT_INLINE Cymric() {
 		_initialized = false;
 	}
 
-	CAT_INLINE virtual ~Generator() {
+	CAT_INLINE virtual ~Cymric() {
 		Finalize();
 	}
 

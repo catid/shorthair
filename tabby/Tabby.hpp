@@ -29,28 +29,45 @@
 #ifndef CAT_TABBY_HPP
 #define CAT_TABBY_HPP
 
-#include "Platform.hpp"
+#include "cymric/Cymric.hpp"
 #include "snowshoe/Snowshoe.hpp"
+#include "calico/Calico.hpp"
+#include "CookieJar.hpp"
+
+/*
+ * Tabby
+ *
+ * Key Agreement Protocol
+ */
 
 namespace cat {
 
 namespace tabby {
 
 
+static const int PRIVATE_KEY_SIZE = 32;
+static const int PUBLIC_KEY_SIZE = 64;
+
+
 struct Hello {
 	/*
-	 * client -> server (102 bytes)
+	 * client -> server (100 bytes)
 	 *
 	 * The client sends this packet to request a connection.
 	 *
 	 * Schema:
 	 *
-	 * UID(2 bytes) = FFFFh
 	 * Cookie(4 bytes) = 0 by default
 	 * Client Public Key(64 bytes)
 	 * Client Nonce(32 bytes)
 	 */
-	u8 data[2 + 4 + 64 + 32];
+
+	static const int COOKIE_SIZE = 4;
+	static const int CLIENT_PUBLIC_KEY_SIZE = PUBLIC_KEY_SIZE;
+	static const int CLIENT_NONCE_SIZE = 32;
+	static const int HELLO_SIZE = COOKIE_SIZE + CLIENT_PUBLIC_KEY_SIZE + CLIENT_NONCE_SIZE;
+
+	u8 data[HELLO_SIZE];
 };
 
 struct Cookie {
@@ -65,59 +82,95 @@ struct Cookie {
 	 *
 	 * Cookie(4 bytes)
 	 */
-	u8 data[4];
+
+	static const int COOKIE_SIZE = 4;
+
+	u8 data[COOKIE_SIZE];
 };
 
-struct Challenge {
+struct Answer {
 	/*
-	 * server -> client (109 bytes)
+	 * server -> client (128 bytes)
 	 *
-	 * The server responds with a Challenge to accept a connection request.
+	 * The server responds with an Answer to accept a connection request.
 	 *
 	 * Server Ephemeral Public Key(64 bytes)
 	 * Server Nonce(32 bytes)
 	 * Server Identity Proof(32 bytes)
-	 * First Encrypted Data(2 bytes + 11 bytes overhead) = UID
 	 */
-	u8 data[64 + 32 + 32 + 11 + 2];
+
+	static const int EPHEMERAL_PUBLIC_KEY_SIZE = PUBLIC_KEY_SIZE;
+	static const int SERVER_NONCE_SIZE = 32;
+	static const int SERVER_IDENTITY_SIZE = 32;
+	static const int ANSWER_SIZE = EPHEMERAL_PUBLIC_KEY_SIZE + SERVER_NONCE_SIZE + SERVER_IDENTITY_SIZE;
+
+	u8 data[ANSWER_SIZE];
 };
 
 
 //// Server
 
 class Server {
-	PublicKey _public_key;
-	cymric::Generator _generator;
+public:
+	static const int CLIENT_PRIVATE_WORDS = 8;
+
+protected:
+	bool _initialized;
+	CookieJar _jar;
+	ecpt _ephemeral_public;
+	u8 _server_public_data[PUBLIC_KEY_SIZE];
+	dude _server_private, _ephemeral_private;
+	cymric::Cymric _generator;
+	// TODO: Periodically change the ephemeral private/public key
+
+	void GenerateEphemeralKey();
 
 public:
-	Server() {
+	CAT_INLINE Server() {
+		_initialized = false;
 	}
-	virtual ~Server() {
+	CAT_INLINE virtual ~Server() {
+		Finalize();
 	}
+
+	void Initialize(const u8 server_public_key[PUBLIC_KEY_SIZE], const u8 server_private_key[PRIVATE_KEY_SIZE]);
+	void Finalize();
+
+	void FillCookie(const void *addr, int len, Cookie *cookie);
+
+	// Returns false if Hello is invalid
+	bool FillAnswer(const void *addr, int len, const Hello *hello, Answer *answer, u8 secret_key[PRIVATE_KEY_SIZE]);
 };
 
 
 //// Client
 
 class Client {
+public:
+	static const int CLIENT_PRIVATE_WORDS = 8;
+
+protected:
 	bool _initialized;
-	u32 _client_private[8];
-	u8 _client_nonce[32];
+	u32 _last_cookie;
+	u32 _client_private[CLIENT_PRIVATE_WORDS];
+	u8 _client_nonce[Hello::CLIENT_NONCE_SIZE];
 	ecpt _client_public, _server_public;
-	cymric::Generator _generator;
+	cymric::Cymric _generator;
 
 public:
-	Client() {
+	CAT_INLINE Client() {
 		_initialized = false;
 	}
-	virtual ~Client() {
+	CAT_INLINE virtual ~Client() {
 		Finalize();
 	}
 
-	void Initialize(PublicKey &server_public_key);
+	void Initialize(const u8 server_public_key[PUBLIC_KEY_SIZE]);
 	void Finalize();
 
 	void FillHello(Hello *hello);
+
+	bool ReadAnswer(Answer *answer, u8 secret_key[PRIVATE_KEY_SIZE]);
 };
 
 
@@ -126,5 +179,4 @@ public:
 } // namespace cat
 
 #endif // CAT_TABBY_HPP
-
 
