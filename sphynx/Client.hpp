@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2009-2012 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -9,8 +9,8 @@
 	* Redistributions in binary form must reproduce the above copyright notice,
 	  this list of conditions and the following disclaimer in the documentation
 	  and/or other materials provided with the distribution.
-	* Neither the name of Sphynx nor the names of its contributors may be
-	  used to endorse or promote products derived from this software without
+	* Neither the name of LibCat nor the names of its contributors may be used
+	  to endorse or promote products derived from this software without
 	  specific prior written permission.
 
 	THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -29,181 +29,136 @@
 #ifndef CAT_SPHYNX_CLIENT_HPP
 #define CAT_SPHYNX_CLIENT_HPP
 
-#include "shorthair/Shorthair.hpp"
-#include "cymric/Cymric.hpp"
-#include "tabby/Tabby.hpp"
-
-/*
- * Sphynx Network Client
- */
+#include <cat/sphynx/Transport.hpp>
+#include <cat/crypt/tunnel/KeyAgreementInitiator.hpp>
+#include <cat/threads/Thread.hpp>
+#include <cat/threads/WaitableFlag.hpp>
 
 namespace cat {
+
 
 namespace sphynx {
 
 
-class Client : protected IShorthair {
-public:
-	struct Settings {
-	};
+// Base class for a Sphynx client
+class CAT_EXPORT Client : public UDPEndpoint, public Transport
+{
+	static const int MIN_KERNEL_RECV_BUFFER = 1000000;
+	static const int DEFAULT_KERNEL_RECV_BUFFER = 8000000;
+	static const int MAX_KERNEL_RECV_BUFFER = 32000000;
 
-	enum Reasons {
-		DISCO_RESOLVE,	// Could not resolve hostname
-	};
+	char _session_key[SESSION_KEY_BYTES];
+
+	KeyAgreementInitiator _key_agreement_initiator;
+	TunnelPublicKey _server_public_key;
+	u8 _cached_challenge[CHALLENGE_BYTES];
+
+	WaitableFlag _kill_flag;
+
+#if defined(CAT_SPHYNX_ROAMING_IP)
+	u16 _my_id;
+#endif
+
+	u32 _last_send_msec;
+	NetAddr _server_addr;
+	bool _connected;
+	AuthenticatedEncryption _auth_enc;
+	u32 _worker_id;
+
+	// Last time a packet was received from the server -- for disconnect timeouts
+	u32 _last_recv_tsc;
+
+	u32 _first_hello_post;
+	u32 _last_hello_post;
+	s32 _hello_post_interval;
+
+	u32 _mtu_discovery_time;
+	int _mtu_discovery_attempts;
+	u32 _next_sync_time;
+	u32 _sync_attempts;
+
+	Clock *_clock;
+	struct TimesPingSample {
+		u32 rtt;
+		s32 delta;
+	} _ts_samples[TS_MAX_SAMPLES];
+	u32 _ts_sample_count, _ts_next_index;
+
+	u32 _ts_delta; // Milliseconds clock difference between server and client: server_time = client_time + _ts_delta
+
+	void UpdateTimeSynch(u32 rtt, s32 delta);
+
+	bool WriteHello();
+	bool WriteTimePing();
+
+	// Return false to remove resolve from cache
+	bool OnDNSResolve(const char *hostname, const NetAddr *array, int array_length);
+
+	virtual s32 WriteDatagrams(const BatchSet &buffers, u32 count);
+	virtual void OnInternal(u32 recv_time, BufferStream msg, u32 bytes);
+	virtual void OnDisconnectComplete();
+
+	void ConnectFail(SphynxError err);
+
+	bool InitialConnect(TunnelTLS *tls, TunnelPublicKey &public_key, const char *session_key);
+	bool FinalConnect(const NetAddr &addr);
+
+	virtual void OnRecvRouting(const BatchSet &buffers);
+	virtual void OnRecv(ThreadLocalStorage &tls, const BatchSet &buffers);
+	virtual void OnTick(ThreadLocalStorage &tls, u32 now);
+
+public:
+	Client();
+	CAT_INLINE virtual ~Client() {}
+
+	CAT_INLINE const char *GetRefObjectName() { return "Client"; }
+
+	// Once you call Connect(), the object may be deleted at any time.  If you want to keep a reference to it, AddRef() before calling
+	bool Connect(const char *hostname, Port port, TunnelPublicKey &public_key, const char *session_key, ThreadLocalStorage *tls = 0);
+	bool Connect(const NetAddr &addr, TunnelPublicKey &public_key, const char *session_key, ThreadLocalStorage *tls = 0);
+
+#if defined(CAT_SPHYNX_ROAMING_IP)
+	// After connection, will return the user id of the client
+	CAT_INLINE u16 getMyId() { return _my_id; }
+#endif
+
+	// Current local time
+	CAT_INLINE u32 getLocalTime() { return _clock->msec(); }
+
+	// Convert from local time to server time
+	CAT_INLINE u32 toServerTime(u32 local_time) { return local_time + _ts_delta; }
+
+	// Convert from server time to local time
+	CAT_INLINE u32 fromServerTime(u32 server_time) { return server_time - _ts_delta; }
+
+	// Current server time
+	CAT_INLINE u32 getServerTime() { return toServerTime(getLocalTime()); }
+
+	// Compress timestamp on client for delivery to server; byte order must be fixed before writing to message
+	CAT_INLINE u16 encodeClientTimestamp(u32 local_time) { return (u16)toServerTime(local_time); }
+
+	// Decompress a timestamp on client from server
+	CAT_INLINE u32 decodeServerTimestamp(u32 local_time, u16 timestamp) { return fromServerTime(BiasedReconstructCounter<16>(toServerTime(local_time), TS_COMPRESS_FUTURE_TOLERANCE, timestamp)); }
 
 protected:
-	bool _initialized;
-	u16 _my_id;
-	Settings _settings;
-	u16 _port;
-	struct sockaddr _server_addr;
-	PublicKey _server_public_key;
-	shorthair::Shorthair _sh;
-	uv_loop_t _uv_loop;
-	uv_udp_t _uv_udp;
-	uv_timer_t _uv_hello;
-	uv_timer_t _uv_tick;
+	virtual bool OnInitialize();
+	//virtual void OnDestroy();
+	//virtual bool OnFinalize();
 
-	// Called with the latest data packet from remote host
-	virtual void OnPacket(u8 *packet, int bytes) {
-	}
+	CAT_INLINE bool IsConnected() { return _connected; }
+	CAT_INLINE u32 GetWorkerID() { return _worker_id; }
 
-	// Called with the latest OOB packet from remote host
-	virtual void OnOOB(u8 *packet, int bytes) {
-	}
-
-	// Send raw data to remote host over UDP socket
-	virtual void SendData(u8 *buffer, int bytes) {
-		CAT_ENFORCE(!uv_udp_send(uv_udp_send_t* req,
-                          uv_udp_t* handle,
-                          const uv_buf_t bufs[],
-                          unsigned int nbufs,
-                          const struct sockaddr* addr,
-                          uv_udp_send_cb send_cb);
-	}
-
-	void OnConnect(const u8 *secret_key) {
-		shorthair::Settings ss;
-		ss.initiator = true;
-		ss.target_loss = 0.0001;
-		ss.min_loss = 0.03;
-		ss.max_loss = 0.5;
-		ss.min_delay = 100;
-		ss.max_delay = 2000;
-		ss.max_data_size = 1350;
-		ss.interface = this;
-
-		_sh.Initialize(secret_key, ss);
-	}
-
-	void SendHello() {
-	}
-
-	void Tick() {
-		_sh.Tick();
-	}
-
-	// Called after a send completes
-	static void uvOnSend(uv_udp_send_t *req, int status) {
-	}
-
-	static void uvOnRecv(uv_udp_t* handle,
-			ssize_t nread,
-			const uv_buf_t* buf,
-			const struct sockaddr* addr,
-			unsigned flags) {
-	}
-
-	static void uvAlloc(uv_handle_t* handle,
-			size_t suggested_size,
-			uv_buf_t* buf) {
-	}
-
-	static void uvHello(uv_timer_t *handle, int status) {
-		Client *client = reinterpret_cast<Client *>( handle->data );
-
-		client->SendHello();
-	}
-
-	static void uvTick(uv_timer_t *handle, int status) {
-		Client *client = reinterpret_cast<Client *>( handle->data );
-
-		client->Tick();
-	}
-
-	// Called after address resolution completes
-	static void uvOnResolve(uv_getaddrinfo_t *handle, int status, struct addrinfo *response) {
-		if (status == -1) {
-			OnDisconnect(DISCO_RESOLVE);
-		} else {
-			_server_addr = response->ai_addr[0];
-
-			CAT_ENFORCE(!uv_udp_bind(&_uv_udp, &_server_addr, 0));
-
-			SendHello();
-
-			CAT_ENFORCE(!uv_timer_init(&_uv_loop, &_uv_hello));
-
-			CAT_ENFORCE(!uv_timer_start(&_uv_hello, callback, 200, 200));
-		}
-
-		uv_freeaddrinfo(response);
-	}
-
-public:
-	CAT_INLINE Client() {
-		_initialized = false;
-	}
-	CAT_INLINE virtual ~Client() {
-		Finalize();
-	}
-
-	void Initialize(Settings &settings) {
-		_settings = settings;
-		_initialized = true;
-
-		CAT_ENFORCE(!uv_udp_init(&_uv_loop, &_uv_udp));
-
-		CAT_ENFORCE(!uv_udp_recv_start(&_uv_udp, uvAlloc, uvOnRecv));
-	}
-
-	void Finalize() {
-		if (_initialized) {
-			CAT_ENFORCE(!uv_udp_recv_stop(&_uv_udp));
-
-			CAT_ENFORCE(!uv_timer_stop(&_uv_hello));
-			CAT_ENFORCE(!uv_timer_stop(&_uv_tick));
-
-			_initialized = false;
-		}
-	}
-
-	void Connect(const char *host, u16 port, const PublicKey *key) {
-		struct addrinfo hints;
-		hints.ai_family = AF_UNSPEC;
-		hints.ai_socktype = SOCK_DGRAM;
-		hints.ai_flags = 0;
-
-		uv_getaddrinfo_t *resolver = new uv_getaddrinfo_t;
-		resolver->
-
-    	int r = uv_getaddrinfo(loop, &resolver, on_resolved, "irc.freenode.net", "6667", &hints);
-	}
-
-	void Disconnect() {
-	}
-
-	virtual void OnConnect() {
-	}
-
-	virtual void OnDisconnect(int reason) {
-	}
+	virtual void OnConnectFail(sphynx::SphynxError err) = 0;
+	virtual void OnConnect() = 0;
+	virtual void OnMessages(IncomingMessage msgs[], u32 count) = 0;
+	virtual void OnCycle(u32 now) = 0;
+	virtual void OnDisconnectReason(u8 reason) = 0; // Called to help explain why a disconnect is happening
 };
 
 
 } // namespace sphynx
 
+
 } // namespace cat
 
 #endif // CAT_SPHYNX_CLIENT_HPP
-

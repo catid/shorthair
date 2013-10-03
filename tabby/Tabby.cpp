@@ -165,7 +165,11 @@ bool Server::FillAnswer(const void *addr, int len, const Hello *hello, Answer *a
 	// Generate server identity field
 	key_hash.Generate(server_proof, Answer::SERVER_IDENTITY_SIZE);
 
-	// TODO: Secure erase private keys
+	// Erase sensitive data from the stack
+	CAT_SECURE_CLR(d_data, Snowshoe::SCALAR_BYTES);
+	CAT_SECURE_CLR(d, sizeof(d));
+	CAT_SECURE_CLR(private_point, sizeof(private_point));
+	CAT_SECURE_CLR(private_point_data, Snowshoe::POINT_BYTES);
 
 	return true;
 }
@@ -280,9 +284,20 @@ bool Client::ReadAnswer(const Answer *answer, u8 secret_key[PRIVATE_KEY_SIZE]) {
 	key_hash.Generate(secret_key, PRIVATE_KEY_SIZE);
 
 	// Generate server identity field
-	key_hash.Generate(server_proof, Answer::SERVER_IDENTITY_SIZE);
+	u8 expect_proof[Answer::SERVER_IDENTITY_SIZE];
+	key_hash.Generate(expect_proof, Answer::SERVER_IDENTITY_SIZE);
 
-	// TODO: Secure erase private keys
+	// Erase sensitive data from the stack
+	CAT_SECURE_CLR(d_data, Snowshoe::SCALAR_BYTES);
+	CAT_SECURE_CLR(d, sizeof(d));
+	CAT_SECURE_CLR(private_point, sizeof(private_point));
+	CAT_SECURE_CLR(private_point_data, Snowshoe::POINT_BYTES);
+
+	// If server proof is invalid,
+	if (!SecureEqual(expect_proof, server_proof, Answer::SERVER_IDENTITY_SIZE)) {
+		// Reject answer
+		return false;
+	}
 
 	return true;
 }
