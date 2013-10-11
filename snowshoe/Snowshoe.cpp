@@ -32,19 +32,33 @@ using namespace cat;
 /*
  * "Simplicity is the ultimate sophistication." -Leonardo da Vinci
  *
+ * Elliptic Curve Cryptography:
+ *
+ * Supported operations:
+ * + Fixed Base Point Multiplication (keygen)
+ * + Variable Base Point Multiplication (DH)
+ * + Simultaneous Point Multiplication (efficient DH-PFS / signatures)
+ *
+ * Curve specification:
+ * + Field math: Fp^2 with p = 2^127-1
+ * + Curve shape: xx + yy = xxyy + 42 (mod p)
+ *
+ * Performance features:
+ * + Most efficient field arithmetic: Fp^2 with p = 2^127-1
+ * + Most efficient point group laws: Extended Twisted Edwards with a = -1
+ * + Efficient endomorphism: 2-GLV-GLS
+ *
+ * Security features:
+ * + Timing-invariant arithmetic: Reduction is branchless
+ * + Timing-invariant point ops: Using GLV-SAC exponent encoding.
+ *
  * References:
  *
- * [1] "Families of fast elliptic curves from Q-curves" (Smith 2013)
- * http://hal-polytechnique.archives-ouvertes.fr/docs/00/82/52/87/PDF/qc-hal.pdf
+ * [1] "Keep Calm and Stay with One" (Longa et al 2013)
+ * http://eprint.iacr.org/2013/158
  *
  * [2] "Division by Invariant Integers using Multiplication" (Granlund & Montgomery 1991)
  * http://pdf.aminer.org/000/542/596/division_by_invariant_integers_using_multiplication.pdf
- *
- * [3] "Differential addition chains" (Bernstein 2006)
- * http://cr.yp.to/ecdh/diffchain-20060219.pdf
- *
- * [4] "Faster compact Diffie-Hellman" (Costello 2013)
- * http://www.craigcostello.com.au/wp-content/uploads/LadderEndo.pdf
  */
 
 // GCC: Use builtin 128-bit type
@@ -479,6 +493,14 @@ static void fe_sqrt(const guy &a, guy &r) {
 
 	fe_sqr(b, r);
 }
+
+/*
+ * New idea: Use gls1271 curve and recreate successes of Ted1271gls
+ *
+ * p = 2^127 - 1
+ * xx + yy = xxyy + 42 (mod p)
+ * 2-GLV-GLS
+ */
 
 /*
  * Algorithm:
