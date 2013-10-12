@@ -81,6 +81,15 @@ using namespace cat;
  *
  * [6] MAGMA Online Calculator
  * http://magma.maths.usyd.edu.au/calc/
+ * Calculating constants required
+ *
+ * [7] "Fault Attack on Elliptic Curve with Montgomery Ladder Implementation" (Fouque Lercier Real Valette 2008)
+ * http://www.di.ens.fr/~fouque/pub/fdtc08.pdf
+ * Discussion on twist security
+ *
+ * [8] "Curve25519: new Diffie-Hellman speed records" (Bernstein 2006)
+ * http://cr.yp.to/ecdh/curve25519-20060209.pdf
+ * Example of a conservative elliptic curve cryptosystem
  */
 
 // GCC: Use builtin 128-bit type
@@ -543,9 +552,7 @@ static void fe_inv(const guy &a, guy &r) {
 	// Uses 2S 2M 2A 1I
 
 	// 1/a = z'/(a*a + b*b)
-
-	// In general, the cost for squaring is reduced by 1/n, n=extension field power
-	// In this case, the inversion only needs to be done over a 2^^127 field instead of 2^^256
+	// NOTE: The inversion only needs to be done over a 2^^127 field instead of 2^^256
 
 	leg t0, t1, t2;
 
@@ -654,7 +661,11 @@ static void decompose(const u64 m[4], leg &a, leg &b) {
 
 /*
  * Extended Twisted Edwards Group Laws
+ *
+ * Curve: a*u*x^2 + y^2 = d*u*x^2*y^2 /Fp^2, p=2^127-1, a=-1, d=109, u=2+i
  */
+
+static const u32 TED_D = 109;
 
 struct ecpt {
 	guy x, y, t, z;
@@ -667,7 +678,7 @@ static CAT_INLINE void ted_neg(ecpt &r) {
 }
 
 /*
- * Extended Twisted Edwards Doubling
+ * Extended Twisted Edwards Doubling [5]
  *
  * (X2, Y2, T2, Z2) = 2 * (X1, Y1, Z1), where T2 = X2*Y2/Z2
  *
@@ -729,7 +740,9 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
 }
 
 /*
- * Extended Twisted Edwards Point Addition
+ * Extended Twisted Edwards Point Addition [1]
+ *
+ * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, 2 * T2, 2 * Z2)
  *
  * Preconditions:
  *
@@ -739,25 +752,14 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
  * a = (X1, Y1, Z1, T1)
  *
  * Using the precomputed coordinates introduced in [1]:
- * When precomputed=true, b = (X + Y, Y - X, 2T, 2Z)
- * When precomputed=false, it assumes z2_one=true.
+ * b = (X + Y, Y - X, 2T, 2Z)
  */
 
 // r = a + b
-static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool precomputed, const bool calc_t) {
-	// Uses: 7M 6A with precomputed=true z2_one=false calc_t=false
-	// precomputed=false: +3A +1M 
+static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool calc_t) {
+	// Uses: 7M 6A with z2_one=false calc_t=false
 	// z2_one=true: -1M + 1A
 	// calc_t=true: +1M
-
-	// If not extended coordinates,
-	if (!precomputed) {
-		// T2 <- x2 + x2	= 2 * x2
-		fe_add(b.x, b.x, b.t);
-
-		// T2 <- T2 * y2	= 2 * T2
-		fe_mul(b.t, b.y, b.t);
-	}
 
 	// t1 <- T2 * Z1		= 2 * T2 * Z1
 	guy t1;
@@ -784,32 +786,14 @@ static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, con
 	// t2 <- X1 + Y1		= X1 + Y1
 	fe_add(p.x, p.y, t2);
 
-	// If in extended coordinates,
-	if (precomputed) {
-		// Y3 <- Y2			= Y2 - X2
-		// t2 <- Y3 * t2	= (X1 + Y1) * (Y2 - X2)
-		fe_mul(b.y, t2, t2);
-	} else {
-		// Y3 <- y2 - x2	= Y2 - X2
-		fe_sub(b.y, b.x, r.y);
-		// t2 <- Y3 * t2	= (X1 + Y1) * (Y2 - X2)
-		fe_mul(r.y, t2, t2);
-	}
+	// t2 <- Y2 * t2		= (X1 + Y1) * (Y2 - X2)
+	fe_mul(b.y, t2, t2);
 
 	// t1 <- Y1 - X1		= Y1 - X1
 	fe_sub(a.y, a.x, t1);
 
-	// If in extended coordinates,
-	if (precomputed) {
-		// X3 <- X2			= X2 + Y2
-		// t1 <- X3 * t1	= (X2 + Y2) * (Y1 - X1)
-		fe_mul(b.x, t1, t1);
-	} else {
-		// X3 <- x2 + y2	= X2 + Y2
-		fe_add(b.x, b.y, r.x);
-		// t1 <- X3 * t1	= (X2 + Y2) * (Y1 - X1)
-		fe_mul(r.x, t1, t1);
-	}
+	// t1 <- X2 * t1		= (X2 + Y2) * (Y1 - X1)
+	fe_mul(b.x, t1, t1);
 
 	// Z3 <- t2 - t1		G = (X1 + Y1) * (Y2 - X2) - (X2 + Y2) * (Y1 - X1)
 	fe_sub(t2, t1, r.z);
@@ -831,8 +815,6 @@ static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, con
 		// T3 <- Ta * Tb	T3 = E * F
 		fe_mul(Ta, Tb, r.t);
 	}
-
-	// Return P + Q = (X3, Y3, Z3, T3)
 }
 
 // Compute affine coordinates for (X,Y)
@@ -859,7 +841,7 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 
 	// C = 1/(1 - d*B)
 	guy c;
-	fe_mul_smallk(b, 109, c);
+	fe_mul_smallk(b, TED_D, c);
 	fe_neg(c);
 	fe_add1(c);
 	fe_inv(c, c);
@@ -871,32 +853,29 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 }
 
 /*
-	As discussed in the 2008 Fouque-Lercier-Real-Valette paper
-	"Fault Attack on Elliptic Curve with Montgomery Ladder Implementation",
-	some implementations of ECC are vulnerable to active attack that cause
-	the	victim to compute a scalar point multiply on the quadratic twist.
-	The twist will usually be of insecure group order unless the designer
-	spends extra time insuring both the curve and its twist have large
-	prime group order.  Bernstein's Curve25519 prevents this attack by
-	being twist-secure, for example, rather than validating the input.
+	As discussed in [7]  some implementations of ECC are vulnerable to
+	an active attack that causes the victim to compute a scalar point
+	product on the quadratic twist of their curve.  If the twist is of
+	insecure group order, then the cryptosystem is vulnerable.
 
-	My curves are actually quadratic twists of Edwards curves by design. =)
-	In my case the twisted curve has secure group order and the twist of my
-	twist is back to an Edwards curve again, which may be of insecure order.
+	Bernstein's Curve25519 [8] prevents this attack by being twist-secure,
+	for example, rather than validating the input.
 
 	To avoid any invalid point fault attacks in my cryptosystem, I validate
-	that the input point (x,y) is on the curve.  I further check that the
-	point is not x=0, which would be another way to introduce a fault,
-	since x=0 is the identity element in Twisted Edwards coordinates and
-	any multiple of x=0 is itself.
+	that the input point (x,y) is on the curve, which is a cheap operation.
 
-	I'm actually not sure if my code would be able to multiply a point
-	that is not on the curve, but let's not find out!
+	I further check that the point is not x=0, which would be another way
+	to introduce a fault, since x=0 is the identity element.
+
+	I also reduce the input point to fit within my field, as the value of
+	x = 2^127-1 can be provided, which would also be the same as x = 0.
 */
 
 // Verify that the affine point (x,y) exists on the given curve
 static CAT_INLINE bool ecpt_valid(const &ecpt a) {
-	// 0 = 1 + d*x^2*y^2 + x^2 - y^2
+	// 0 = 1 + 109*x^2*y^2 + x^2 - y^2
+
+	// TODO: Reduce x,y to fit within field.
 
 	// If point is the additive identity x=0,
 	if (fe_iszero(a.x)) {
@@ -914,7 +893,7 @@ static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 	// E = B * C * d + 1 + B - C
 	guy e;
 	fe_mul(b, c, e);
-	fe_mul(e, d, e);
+	fe_mul_smallk(e, TED_D, e);
 	fe_add1(e);
 	fe_add(e, b, e);
 	fe_sub(e, c, e);
