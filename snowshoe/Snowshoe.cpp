@@ -41,7 +41,7 @@ using namespace cat;
  *
  * Curve specification:
  * + Field math: Fp^2 with p = 2^127-1
- * + Curve shape: E:-uxx + yy = 109uxxyy + 1 (mod Fp^2), u = 2 + i
+ * + Curve shape: E:auxx + yy = duxxyy + 1 (mod Fp^2), u = 2 + i, a = -1, d=109
  * + Group size: #E = 4*q,
  * + q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA6261414C0DC87D3CE9B68E3B09E01A5
  *
@@ -706,7 +706,7 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 
 	// C = 1/(1 - d*B)
 	guy c;
-	fe_mul(b, d, c);
+	fe_mul_smallk(b, 109, c);
 	fe_neg(c);
 	fe_add1(c);
 	fe_inv(c, c);
@@ -768,6 +768,11 @@ static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 
 	// If the result is zero, it is on the curve
 	return fe_iszero(e);
+}
+
+// R = kG
+void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
+	// Multiplication by generator point
 }
 
 // R = kP
