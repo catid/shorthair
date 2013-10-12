@@ -59,11 +59,11 @@ using namespace cat;
 /*
  * References:
  *
- * [1] "Keep Calm and Stay with One" (Longa et al 2013)
+ * [1] "Keep Calm and Stay with One" (Hernandez Longa Sanchez 2013)
  * http://eprint.iacr.org/2013/158
  * Introduces GLV-SAC exponent recoding
  *
- * [2] "Division by Invariant Integers using Multiplication" (Granlund & Montgomery 1991)
+ * [2] "Division by Invariant Integers using Multiplication" (Granlund Montgomery 1991)
  * http://pdf.aminer.org/000/542/596/division_by_invariant_integers_using_multiplication.pdf
  * Modulus on fixed field in constant time
  *
@@ -80,7 +80,7 @@ using namespace cat;
  * Introduces Extended Twisted Edwards group laws
  *
  * [6] "Fast and compact elliptic-curve cryptography" (Hamburg 2012)
- * http://eprint.iacr.org/2012/309.pdf
+ * http://eprint.iacr.org/2012/309
  * T = T1*T2 trick in Extended Twisted Edwards group laws
  */
 
@@ -471,16 +471,22 @@ static CAT_INLINE bool fe_iszero(const guy &r) {
 
 // r = -a
 static CAT_INLINE void fe_neg(guy &r) {
+	// Uses 1A
+
 	fp_neg(r.b);
 }
 
 // r = r + (1 + 0i)
 static CAT_INLINE void fe_add1(guy &r) {
+	// Uses 1A
+
 	fp_add1(r.a);
 }
 
 // r = a + b
 static CAT_INLINE void fe_add(const guy &a, const guy &b, guy &r) {
+	// Uses 2A
+
 	// Seems about comparable to 2^^256-c in performance
 	fp_add(a.a, b.a, r.a);
 	fp_add(a.b, b.b, r.b);
@@ -488,6 +494,8 @@ static CAT_INLINE void fe_add(const guy &a, const guy &b, guy &r) {
 
 // r = a - b
 static CAT_INLINE void fe_sub(const guy &a, const guy &b, guy &r) {
+	// Uses 2A
+
 	// Seems about comparable to 2^^256-c in performance
 	fp_sub(a.a, b.a, r.a);
 	fp_sub(a.b, b.b, r.b);
@@ -519,6 +527,7 @@ static CAT_INLINE void fe_mul(const guy &a, const guy &b, guy &r) {
 // r = a * b(small constant)
 static CAT_INLINE void fe_mul_smallk(const guy &a, const u32 b, guy &r) {
 	// Uses 2m
+
 	fp_mul_smallk(a.a, b, r.a);
 	fp_mul_smallk(a.b, b, r.b);
 }
@@ -614,7 +623,7 @@ static void decompose(const u64 m[4], leg &a, leg &b) {
  */
 
 struct ecpt {
-	guy x, y, z, t;
+	guy x, y, z, ta, tb;
 };
 
 static CAT_INLINE void ted_neg(ecpt &r) {
@@ -623,84 +632,54 @@ static CAT_INLINE void ted_neg(ecpt &r) {
 	fe_neg(r.t);
 }
 
-static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, bool extended) {
-	// TODO: See [1]
+static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r) {
+	// Uses 3S 4M 5A
+
+	// Ta <- X^2			= X^2
+	fe_sqr(p.x, r.ta);
+
+	// t1 <- Y^2			= Y^2
+	guy t1;
+	fe_sqr(p.y, t1);
+
+	// Tb <- Ta + t1		= X^2 + Y^2
+	fe_add(r.ta, t1, r.tb);
+
+	// Ta <- t1 - Ta		= Y^2 - X^2
+	fe_sub(t1, r.ta, r.ta);
+
+	// Y2 <- Tb * Ta		Y2 = (X^2 + Y^2) * (Y^2 - X^2)
+	fe_mul(r.tb, r.ta, r.y);
+
+	// t1 <- Z^2			= Z^2
+	fe_sqr(p.z, t1);
+
+	// t1 <- t1 + t1		= 2 * Z^2
+	fe_add(t1, t1, t1);
+
+	// t1 <- t1 - Ta		= 2 * Z^2 - (Y^2 - X^2)
+	fe_sub(t1, r.ta, t1);
+
+	// Z2 <- Ta * t1		Z2 = (Y^2 - X^2) * (2 * Z^2 - (Y^2 - X^2))
+	fe_mul(r.ta, t1, r.z);
+
+	// Ta <- X + Y			= X + Y
+	fe_add(p.x, p.y, r.ta);
+
+	// Ta <- Ta^2			= (X + Y)^2
+	fe_sqr(r.ta, r.ta);
+
+	// Ta <- Ta - Tb		= 2 * X * Y = (X + Y)^2 - (X^2 + Y^2)
+	fe_sub(r.ta, r.tb, r.ta);
+
+	// X2 <- Ta * t1		X2 = 2 * X * Y * (2 * Z^2 - (Y^2 - X^2))
+	fe_mul(r.ta, t1, r.x);
+
+	// return 2P = (X2,Y2,Z2,{Ta,Tb}:T=Ta*Tb)
 }
 
 static CAT_INLINE void ted_add(const ecpt &a, const ecpt &b, ecpt &r, bool extended) {
-	// A = (Y1 - X1) * (Y2 - X2)
-	guy c, d;
-	fe_sub(a.y, a.x, c);
-	fe_sub(b.y, b.x, d);
-
-	// B = (Y1 + X1) * (Y2 + X2)
-	guy g, h, a;
-	fe_add(a.y, a.x, g);
-	fe_add(b.y, b.x, h);
-	fe_mul(c, d, a);
-
-	// C = 2 * d * T1 * T2 (can remove multiplication by d if inputs are known to be different)
-	fe_mul(a.t, b.t, c);
-	fe_mul(g, h, b);
-	fe_mul(c, dx2, c); // TODO: Optimize this
-
-	// D = 2 * Z1 * Z2
-	fe_mul(a.z, b.z, d);
-
-	// E = B - A, F = D - C, G = D + C, H = B + A
-	guy e, d, f;
-	fe_sub(b, a, e);
-	fe_add(d, d, d);
-	fe_add(b, a, h);
-	fe_sub(d, c, f);
-	fe_add(d, c, g);
-
-	// X3 = E * F, Y3 = G * H, T3 = E * H, Z3 = F * G
-	fe_mul(e, f, r.x);
-	fe_mul(g, h, r.y);
-	if (extended) {
-		fe_mul(e, h, r.t);
-	}
-	fe_mul(f, g, r.z);
-}
-
-static CAT_INLINE void ted_sub(const ecpt &a, const ecpt &b, ecpt &r, bool extended) {
-	// Negation: X2 = -X2, T2 = -T2
-
-	// A = (Y1 - X1) * (Y2 + X2)
-	guy c, d, a;
-	fe_sub(a.y, a.x, c);
-	fe_add(b.y, b.x, d);
-	fe_mul(c, d, a);
-
-	// B = (Y1 + X1) * (Y2 - X2)
-	fe_add(a.y, a.x, c);
-	fe_sub(b.y, b.x, d);
-	fe_mul(c, d, b);
-
-	// C = 2 * d * T1 * T2 (can remove multiplication by d if inputs are known to be different)
-	fe_mul(a.t, b.t, c);
-	fe_mul(c, dx2, c);
-	// C = -C
-
-	// D = 2 * Z1 * Z2
-	fe_mul(a.z, b.z, d);
-	fe_add(d, d, d);
-
-	// E = B - A, F = D + C, G = D - C, H = B + A
-	guy e, f, g, h;
-	fe_sub(b, a, e);
-	fe_add(d, c, f);
-	fe_sub(d, c, g);
-	fe_add(b, a, h);
-
-	// X3 = E * F, Y3 = G * H, T3 = E * H, Z3 = F * G
-	fe_mul(e, f, r.x);
-	fe_mul(f, h, r.y);
-	if (extended) {
-		fe_mul(e, h, r.t);
-	}
-	fe_mul(f, g, r.z);
+	// TODO: Redo these
 }
 
 // Compute affine coordinates for (X,Y)
