@@ -41,7 +41,7 @@ using namespace cat;
  *
  * Curve specification:
  * + Field math: Fp^2 with p = 2^127-1
- * + Curve shape: xx + yy = xxyy + 42 (mod p)
+ * + Curve shape: -uxx + yy = 1 + 109uxxyy (mod p), u = 2 + i
  *
  * Performance features:
  * + Most efficient field arithmetic: Fp^2 with p = 2^127-1
@@ -50,15 +50,17 @@ using namespace cat;
  *
  * Security features:
  * + Timing-invariant arithmetic: Reduction is branchless
- * + Timing-invariant point ops: Using GLV-SAC exponent encoding.
+ * + Timing-invariant point ops: Using GLV-SAC exponent recoding.
  *
  * References:
  *
  * [1] "Keep Calm and Stay with One" (Longa et al 2013)
  * http://eprint.iacr.org/2013/158
+ * Describes the GLV-SAC exponent recoding.
  *
  * [2] "Division by Invariant Integers using Multiplication" (Granlund & Montgomery 1991)
  * http://pdf.aminer.org/000/542/596/division_by_invariant_integers_using_multiplication.pdf
+ * Describes an efficient approach to divide by a fixed divisor.
  */
 
 // GCC: Use builtin 128-bit type
