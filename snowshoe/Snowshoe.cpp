@@ -769,10 +769,8 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
  * calc_t was set to true on last operation for a and b
  * a != b: This is a dedicated formula that faults when a = b
  *
- * a = (X1, Y1, Z1, T1)
- *
- * Using the precomputed coordinates introduced in [1]:
- * b = (X + Y, Y - X, 2T, 2Z)
+ * a = (X1, Y1, T1, Z1)
+ * b = (X2 + Y2, Y2 - X2, 2*T2, 2*Z2)
  */
 
 // TODO: Check cases where this fails (a = b)
@@ -875,24 +873,24 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 }
 
 /*
-	As discussed in [7]  some implementations of ECC are vulnerable to
-	an active attack that causes the victim to compute a scalar point
-	product on the quadratic twist of their curve.  If the twist is of
-	insecure group order, then the cryptosystem is vulnerable.
+	When the input point is not validated or other countermeasures are not
+	in place, it is possible to provide an input point on the twist of the
+	curve.  As shown in [7] this can lead to an active attack on the
+	cryptosystem.
 
-	Bernstein's Curve25519 [8] prevents this attack by being twist-secure,
+	Bernstein's Curve25519 [8] prevents this attack by being "twist-secure",
 	for example, rather than validating the input.
 
 	To avoid any invalid point fault attacks in my cryptosystem, I validate
-	that the input point (x,y) is on the curve, which is a cheap operation.
+	that the input point (x, y) is on the curve, which is a cheap operation.
 
-	I further check that the point is not x=0, which would be another way
-	to introduce a fault, since x=0 is the identity element.
+	I further check that the point is not x = 0, which would be another way
+	to introduce a fault, since x = 0 is the identity element.
 	The input needs to fit within the field, so the exceptional value of
 	2^127-1 must be checked for, since it is equivalent to 0.
 */
 
-// Verify that the affine point (x,y) exists on the given curve
+// Verify that the affine point (x, y) exists on the given curve
 static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 	// 0 = 1 + 109*x^2*y^2 + x^2 - y^2
 
