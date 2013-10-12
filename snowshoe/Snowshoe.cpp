@@ -78,10 +78,6 @@ using namespace cat;
  * [5] "Twisted Edwards Curves Revisited" (Hisil Wong Carter Dawson 2008)
  * http://www.iacr.org/archive/asiacrypt2008/53500329/53500329.pdf
  * Introduces Extended Twisted Edwards group laws
- *
- * [6] "Fast and compact elliptic-curve cryptography" (Hamburg 2012)
- * http://eprint.iacr.org/2012/309
- * T = T1*T2 trick in Extended Twisted Edwards group laws
  */
 
 /*
@@ -230,7 +226,6 @@ static CAT_INLINE void fp_mul_smallk(const leg &a, const u32 b, leg &r) {
 
 	// middle = A0*B1 + B1*B0 <= 2(2^64-1)(2^63-1)
 	u128 middle = (u128)a.i[1] * b;
-	// NOTE: Avoids a reduction here
 
 	// low = A0*B0 < 2^^128
 	u128 low = (u128)a.i[0] * b;
@@ -299,6 +294,7 @@ static CAT_INLINE void fp_sqr(const leg &a, leg &r) {
 // r = 1/a
 static CAT_INLINE void fp_inv(const leg &a, leg &r) {
 	// Uses 126S 12M
+
 	/*
 	 * Euler's totient function:
 	 * 1/a = a ^ (2^127 - 1 - 2)
@@ -623,7 +619,7 @@ static void decompose(const u64 m[4], leg &a, leg &b) {
  */
 
 struct ecpt {
-	guy x, y, z, ta, tb;
+	guy x, y, z, t;
 };
 
 static CAT_INLINE void ted_neg(ecpt &r) {
@@ -632,24 +628,26 @@ static CAT_INLINE void ted_neg(ecpt &r) {
 	fe_neg(r.t);
 }
 
-static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r) {
+static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
 	// Uses 3S 4M 5A
 
 	// Ta <- X^2			= X^2
-	fe_sqr(p.x, r.ta);
+	guy Ta;
+	fe_sqr(p.x, Ta);
 
 	// t1 <- Y^2			= Y^2
 	guy t1;
 	fe_sqr(p.y, t1);
 
 	// Tb <- Ta + t1		= X^2 + Y^2
-	fe_add(r.ta, t1, r.tb);
+	guy Tb;
+	fe_add(Ta, t1, Tb);
 
 	// Ta <- t1 - Ta		= Y^2 - X^2
-	fe_sub(t1, r.ta, r.ta);
+	fe_sub(t1, Ta, Ta);
 
 	// Y2 <- Tb * Ta		Y2 = (X^2 + Y^2) * (Y^2 - X^2)
-	fe_mul(r.tb, r.ta, r.y);
+	fe_mul(Tb, Ta, r.y);
 
 	// t1 <- Z^2			= Z^2
 	fe_sqr(p.z, t1);
@@ -658,28 +656,91 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r) {
 	fe_add(t1, t1, t1);
 
 	// t1 <- t1 - Ta		= 2 * Z^2 - (Y^2 - X^2)
-	fe_sub(t1, r.ta, t1);
+	fe_sub(t1, Ta, t1);
 
 	// Z2 <- Ta * t1		Z2 = (Y^2 - X^2) * (2 * Z^2 - (Y^2 - X^2))
-	fe_mul(r.ta, t1, r.z);
+	fe_mul(Ta, t1, r.z);
 
 	// Ta <- X + Y			= X + Y
-	fe_add(p.x, p.y, r.ta);
+	fe_add(p.x, p.y, Ta);
 
 	// Ta <- Ta^2			= (X + Y)^2
-	fe_sqr(r.ta, r.ta);
+	fe_sqr(Ta, Ta);
 
 	// Ta <- Ta - Tb		= 2 * X * Y = (X + Y)^2 - (X^2 + Y^2)
-	fe_sub(r.ta, r.tb, r.ta);
+	fe_sub(Ta, Tb, Ta);
 
 	// X2 <- Ta * t1		X2 = 2 * X * Y * (2 * Z^2 - (Y^2 - X^2))
-	fe_mul(r.ta, t1, r.x);
+	fe_mul(Ta, t1, r.x);
 
-	// return 2P = (X2,Y2,Z2,{Ta,Tb}:T=Ta*Tb)
+	// If t is wanted,
+	if (calc_t) {
+		fe_mul(Ta, Tb, r.t);
+	}
+
+	// return 2P = (X2,Y2,Z2,T2)
 }
 
-static CAT_INLINE void ted_add(const ecpt &a, const ecpt &b, ecpt &r, bool extended) {
-	// TODO: Redo these
+// Adding a to a precomputed (extended) point p
+static CAT_INLINE void ted_add(ecpt &a, ecpt &p, ecpt &r, const bool z2_one, const bool ext, const bool calc_t) {
+	// If not extended coordinates,
+	if (!ext) {
+		// T2 <- x2 + x2	= 2 * x2
+		fe_add(b.x, b.x, b.t);
+
+		// T2 <- T2 * y2	= 2 * T2
+		fe_mul(b.t, b.y, b.t);
+	}
+
+	// t1 <- T2 * Z1		= 2 * T2 * Z1
+	guy t1;
+	fe_mul(b.t, a.z, t1);
+
+	// If z2 = 1,
+	guy t2;
+	if (z2_one) {
+		// t2 <- T1 + T1	= 2 * T1 * Z2
+		fe_add(a.t, a.t, t2);
+	} else {
+		// t2 <- T1 * Z2	= 2 * T1 * Z2
+		fe_mul(a.t, b.z, t2);
+	}
+
+	// Ta <- t2 - t1		Ta = E = 2 * T1 * Z2 - 2 * T2 * Z1
+	// Tb <- t1 + t2		Tb = F = 2 * T1 * Z2 + 2 * T2 * Z1
+	// t2 <- X1 + Y1		= X1 + Y1
+
+	// If in extended coordinates,
+	if (ext) {
+		// Y3 <- Y2			= Y2 - X2
+	} else {
+		// Y3 <- y2 - x2	= Y2 - X2
+	}
+
+	// t2 <- Y3 * t2		= (X1 + Y1) * (Y2 - X2)
+	// t1 <- Y1 - X1		= Y1 - X1
+
+	// If in extended coordinates,
+	if (ext) {
+		// X3 <- X2			= X2 + Y2
+	} else {
+		// X3 <- x2 + y2	= X2 + Y2
+	}
+
+	// t1 <- X3 * t1		= (X2 + Y2) * (Y1 - X1)
+	// Z3 <- t2 - t1		G = (X1 + Y1) * (Y2 - X2) - (X2 + Y2) * (Y1 - X1)
+	// t1 <- t1 + t2		H = (X1 + Y1) * (Y2 - X2) + (X2 + Y2) * (Y1 - X1)
+	// X3 <- Tb * Z3		X3 = G * F
+	// Z3 <- t1 * Z3		Z3 = G * H
+	// Y3 <- Ta * t1		Y3 = E * H
+
+	// If t is wanted,
+	if (calc_t) {
+		// T3 <- Ta * Tb	T3 = E * F
+		fe_mul(Ta, Tb, r.t);
+	}
+
+	// Return P + Q = (X3, Y3, Z3, T3)
 }
 
 // Compute affine coordinates for (X,Y)
