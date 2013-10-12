@@ -41,26 +41,46 @@ using namespace cat;
  *
  * Curve specification:
  * + Field math: Fp^2 with p = 2^127-1
- * + Curve shape: -uxx + yy = 1 + 109uxxyy (mod p), u = 2 + i
+ * + Curve shape: E:auxx + yy = duxxyy + 1 (mod Fp^2), u = 2 + i, a = -1, d=109
+ * + Group size: #E = 4*q,
+ * + q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA6261414C0DC87D3CE9B68E3B09E01A5
  *
  * Performance features:
  * + Most efficient field arithmetic: Fp^2 with p = 2^127-1
- * + Most efficient point group laws: Extended Twisted Edwards with a = -1
- * + Efficient endomorphism: 2-GLV-GLS
+ * + Most efficient point group laws: Extended Twisted Edwards with a = -1 [5]
+ * + Efficient endomorphism: 2-GLV-GLS [3]
  *
  * Security features:
  * + Timing-invariant arithmetic: Reduction is branchless
- * + Timing-invariant point ops: Using GLV-SAC exponent recoding.
- *
+ * + Timing-invariant group laws: Twisted Edwards [5]
+ * + Timing-invariant point multiplication: Using GLV-SAC exponent recoding [1]
+ */
+
+/*
  * References:
  *
- * [1] "Keep Calm and Stay with One" (Longa et al 2013)
+ * [1] "Keep Calm and Stay with One" (Hernandez Longa Sanchez 2013)
  * http://eprint.iacr.org/2013/158
- * Describes the GLV-SAC exponent recoding.
+ * Introduces GLV-SAC exponent recoding
  *
- * [2] "Division by Invariant Integers using Multiplication" (Granlund & Montgomery 1991)
+ * [2] "Division by Invariant Integers using Multiplication" (Granlund Montgomery 1991)
  * http://pdf.aminer.org/000/542/596/division_by_invariant_integers_using_multiplication.pdf
- * Describes an efficient approach to divide by a fixed divisor.
+ * Modulus on fixed field in constant time
+ *
+ * [3] "Endomorphisms for Faster Elliptic Curve Cryptography on a Large Class of Curves" (Galbraith Lin Scott 2008)
+ * http://eprint.iacr.org/2008/194
+ * Introduces 2-GLV-GLS method math
+ *
+ * [4] "Endomorphisms for Faster Elliptic Curve Cryptography on a Large Class of Curves" (Galbraith Lin Scott 2009)
+ * http://www.iacr.org/archive/eurocrypt2009/54790519/54790519.pdf
+ * Revises 2-GLV-GLS method math
+ *
+ * [5] "Twisted Edwards Curves Revisited" (Hisil Wong Carter Dawson 2008)
+ * http://www.iacr.org/archive/asiacrypt2008/53500329/53500329.pdf
+ * Introduces Extended Twisted Edwards group laws
+ *
+ * [6] MAGMA Online Calculator
+ * http://magma.maths.usyd.edu.au/calc/
  */
 
 // GCC: Use builtin 128-bit type
@@ -91,7 +111,7 @@ static fp_save(const leg &x, u8 *r) {
  * + Fp^7 -> 217-bit keys, too far from targetted security level
  * + Weil Descent attacks apply to Fp^8/9
  *
- * Other primes (2^^61 - 1): Pretty far from a word size.
+ * Other prime (2^^61 - 1): Pretty far from a word size.
  *
  * I care mainly about server performance, with 64-bit Linux VPS in mind, and
  * the Intel x86-64 instruction set has a fast 64x64->128 multiply instruction
@@ -107,6 +127,7 @@ static CAT_INLINE bool fp_iszero(const leg &r) {
 
 // r = -a
 static CAT_INLINE void fp_neg(const leg &a, leg &r) {
+	// Uses 1a 1r
 	u128 s = 0 - a;
 
 	// Reduce
@@ -118,6 +139,7 @@ static CAT_INLINE void fp_neg(const leg &a, leg &r) {
 
 // r = r + 1
 static CAT_INLINE void fp_add1(leg &r) {
+	// Uses 1a 1r
 	u128 s = r.w + 1;
 
 	// Reduce
@@ -129,6 +151,7 @@ static CAT_INLINE void fp_add1(leg &r) {
 
 // r = a + b
 static CAT_INLINE void fp_add(const leg &a, const leg &b, leg &r) {
+	// Uses 1a 1r
 	u128 s = a.w + b.w;
 
 	// Reduce
@@ -140,6 +163,7 @@ static CAT_INLINE void fp_add(const leg &a, const leg &b, leg &r) {
 
 // r = a - b
 static CAT_INLINE void fp_sub(const leg &a, const leg &b, leg &r) {
+	// Uses 1a 1r
 	u128 s = a.w - b.w;
 
 	// Reduce
@@ -151,6 +175,7 @@ static CAT_INLINE void fp_sub(const leg &a, const leg &b, leg &r) {
 
 // r = a * b
 static CAT_INLINE void fp_mul(const leg &a, const leg &b, leg &r) {
+	// Uses 4m 5a 1r
 	// a.i[0] = A0, a.i[1] = A1, b.i[0] = B0, b.i[1] = B1
 
 	// middle = A0*B1 + B1*B0 <= 2(2^64-1)(2^63-1)
@@ -185,8 +210,44 @@ static CAT_INLINE void fp_mul(const leg &a, const leg &b, leg &r) {
 	r.i[1] &= 0x7fffffffffffffffULL;
 }
 
+// r = a * b(small 32-bit constant)
+static CAT_INLINE void fp_mul_smallk(const leg &a, const u32 b, leg &r) {
+	// Uses 2m 4a 1r
+	// Simplified from above:
+	// a.i[0] = A0, a.i[1] = A1, B0 = 0|b, B1 = 0
+
+	// middle = A0*B1 + B1*B0 <= 2(2^64-1)(2^63-1)
+	u128 middle = (u128)a.i[1] * b;
+
+	// low = A0*B0 < 2^^128
+	u128 low = (u128)a.i[0] * b;
+
+	register u64 ll = (u64)low;
+
+	// middle += high half of low <= 2(2^64-1)(2^63-1) + (2^64-1)
+	middle += (u64)(low >> 64);
+
+	// high = A1*B1 <= (2^63-1)(2^63-1)
+	// high += high half of middle <= (2^63-1)(2^63-1) + (2^64-1)
+	u128 high = (u64)(middle >> 64);
+
+	// double high < 2^127
+	high += high;
+
+	// TEMP = lowpart(middle) : lowpart(low) < 2^128
+	// Reduce TEMP < 2^127
+	// Result = high + TEMP < 2^128
+	register u64 next = (u64)middle;
+	r.w = high + (next >> 63) + ll + ((u128)(next & 0x7fffffffffffffffULL) << 64);
+
+	// Reduce result < 2^127
+	r.w += r.i[1] >> 63;
+	r.i[1] &= 0x7fffffffffffffffULL;
+}
+
 // r = a^2
 static CAT_INLINE void fp_sqr(const leg &a, leg &r) {
+	// Uses 3m 5a 1r
 	// a.i[0] = A0, a.i[1] = A1
 
 	// middle = A0*A1 + A1*A0 <= 2(2^64-1)(2^63-1)
@@ -224,6 +285,8 @@ static CAT_INLINE void fp_sqr(const leg &a, leg &r) {
 
 // r = 1/a
 static CAT_INLINE void fp_inv(const leg &a, leg &r) {
+	// Uses 126S 12M
+
 	/*
 	 * Euler's totient function:
 	 * 1/a = a ^ (2^127 - 1 - 2)
@@ -396,16 +459,22 @@ static CAT_INLINE bool fe_iszero(const guy &r) {
 
 // r = -a
 static CAT_INLINE void fe_neg(guy &r) {
+	// Uses 1A
+
 	fp_neg(r.b);
 }
 
 // r = r + (1 + 0i)
 static CAT_INLINE void fe_add1(guy &r) {
+	// Uses 1A
+
 	fp_add1(r.a);
 }
 
 // r = a + b
 static CAT_INLINE void fe_add(const guy &a, const guy &b, guy &r) {
+	// Uses 2A
+
 	// Seems about comparable to 2^^256-c in performance
 	fp_add(a.a, b.a, r.a);
 	fp_add(a.b, b.b, r.b);
@@ -413,6 +482,8 @@ static CAT_INLINE void fe_add(const guy &a, const guy &b, guy &r) {
 
 // r = a - b
 static CAT_INLINE void fe_sub(const guy &a, const guy &b, guy &r) {
+	// Uses 2A
+
 	// Seems about comparable to 2^^256-c in performance
 	fp_sub(a.a, b.a, r.a);
 	fp_sub(a.b, b.b, r.b);
@@ -420,7 +491,7 @@ static CAT_INLINE void fe_sub(const guy &a, const guy &b, guy &r) {
 
 // r = a * b
 static CAT_INLINE void fe_mul(const guy &a, const guy &b, guy &r) {
-	// Use 3 Fp muls, similar to Karatsuba optimization
+	// Uses 3M 5A
 
 	// (a0 + ia1) * (b0 + ib1)
 	// = (a0b0 - a1b1) + i(a1b0 + a0b1)
@@ -441,14 +512,21 @@ static CAT_INLINE void fe_mul(const guy &a, const guy &b, guy &r) {
 	fp_sub(t2, t1, r.b);
 }
 
+// r = a * b(small constant)
+static CAT_INLINE void fe_mul_smallk(const guy &a, const u32 b, guy &r) {
+	// Uses 2m
+
+	fp_mul_smallk(a.a, b, r.a);
+	fp_mul_smallk(a.b, b, r.b);
+}
+
 // r = a * a
 static CAT_INLINE void fe_sqr(const guy &a, guy &r) {
+	// Uses 2M 3A
+
 	// (a + ib) * (a + ib)
 	// = (aa - bb) + i(ab + ab)
 	// = (a + b) * (a - b) + i(ab + ab)
-
-	// Use just 2 Fp muls - fast!
-	// And we can exploit fast squaring in the curve group laws...
 
 	leg t0, t1;
 
@@ -462,6 +540,8 @@ static CAT_INLINE void fe_sqr(const guy &a, guy &r) {
 
 // r = 1 / a
 static void fe_inv(const guy &a, guy &r) {
+	// Uses 2S 2M 2A 1I
+
 	// 1/a = z'/(a*a + b*b)
 
 	// In general, the cost for squaring is reduced by 1/n, n=extension field power
@@ -483,6 +563,8 @@ static void fe_inv(const guy &a, guy &r) {
 
 // r = sqrt(a)
 static void fe_sqrt(const guy &a, guy &r) {
+	// Uses 125S
+
     // Square root for modulus p = 3 mod 4: a ^ (p + 1)/4
 	// For p = 2^127 - 1, this reduces to a ^ (2^125)
 
@@ -497,75 +579,52 @@ static void fe_sqrt(const guy &a, guy &r) {
 }
 
 /*
- * New idea: Use gls1271 curve and recreate successes of Ted1271gls
+ * from [3]: endo(P) = y*P
  *
- * p = 2^127 - 1
- * xx + yy = xxyy + 42 (mod p)
- * 2-GLV-GLS
+ * y(lambda)^2 + 1 = 0 (mod q)
+ * = sqrt(-1) (mod q)
+ * = sqrt(q-1) (mod q)
+ * = Modsqrt(q-1,q) using [6]
+ * = 0xEC2108006820E1AB0A9480CCBB42BE2A827C49CDE94F5CCCBF95D17BD8CF58F
  */
 
-/*
- * Algorithm:
- *
- * Given 254-bit m and arbitrary affine point X
- * + Validate input point is not identity or 0
- * Decompose m into a, b
- * + Expression from [1] to calculate this
- * + Implement division by constant factors as in [2]
- * Compute (X1, Z1) from endomorphism
- * + Does not require an inverse in Fp
- * Compute (End+1)(X, Z) to kick-start the ladder
- * + Outline is in [4]
- * Use Bernstein 2-dimensional Montgomery ladder
- * + Described in [3]
- * Compute X = X/Z
- * + Requires an inverse in Fp
- */
+static const u64 ENDO_LAMBDA[4] = {
+	0xCBF95D17BD8CF58FULL,
+	0xA827C49CDE94F5CCULL,
+	0xB0A9480CCBB42BE2ULL
+	0x0EC2108006820E1AULL
+}
 
 /*
- * Take curve from [1]:
+ * In Twisted Edwards affine coordinates:
  *
- * E : yy = xxx - 6(5 - 3*t*i)x + 8(7-9*t*i), i = sqrt(-1), p = 2^127 - 1
- * t = 122912611041315220011572494331480107107
+ * endo(x,y) = (sqrt(conj(u)/u)*conj(x), conj(y)), p = 2^127-1, u = 2 + i
  *
- * #E = 3 * (253-bit prime)
- * #E' = 254-bit prime
+ * xek = sqrt(conj(u)/u)
+ * = 119563271493748934302613455993671912329 + 68985359527028636873539608271459718931*i
+ * = 0x59F30C694ED33218695AB4D883DE0B89 + 0x33E618D29DA66430D2B569B107BC1713*i
  *
- * Verify:
- * C = 9(1 + t*i)
- * 2C is a square in Fp^2
- * A = 12 / sqrt(2C) < 2^32
+ * MAGMA script using [6]:
  *
- * Use SEA - need the Fp^2 version (?)
+ * p := 2^127-1;
+ * K<w> := GF(p^2);
+ * xek := SquareRoot((2-w)/(2+w));
+ * print xek;
  */
 
+static const guy ENDO_XEK = {
+	{	// Real part (a):
+		0x695AB4D883DE0B89ULL,
+		0x59F30C694ED33218ULL
+	},
+	{	// Imaginart part (b):
+		0xD2B569B107BC1713ULL,
+		0x33E618D29DA66430ULL
+	}
+};
+
+
 /*
- * Scalar decomposition
- *
- * From [1]:
- *
- * Using a Q-curve of degree 2:
- *
- * E : yy = xxx - 6(5 - 3*s*i)x + 8(7-9*s*i), i = sqrt(-1)
- *
- * Assuming p = 2^127 - 1, p Mod 8 = 7 -> e = 1
- * -> (1 + e*p) = 2^127, and multiplications become shifts.
- * NOTE: If we choose a degree 3 Q-curve, then e = -1 as p Mod 3 = 1
- *
- * C = 9(1 + si)
- *
- * Endomorphism : (x, y) -> ( -x^p/2 - C^p / (x^p - 4), y^p/sqrt(-2) * (-1/2 + C^p/(x^p-4)^2) )
- *
- * E has a Montgomery model over Fp^2 iff 2C is a square in Fp^2.
- * (x, y) -> (X/Z, Y/Z) = ( (x - 4) / B, y / B^2 )
- *
- * B = sqrt(2C)
- * A = 12 / B
- *
- * Em : BYYZ = X(XX+AXZ+ZZ)
- *
- * Endomorphism : (X,Z) -> (X^2p + A^p * X^p * Z^p + Z^2p : -2B^(1-p) * X^p * Z^p)
- *
  * m = a + b * y (mod N)  a, b < 2^127
  *
  * N: The number of points in the group, a large prime with small cofactor h
@@ -577,8 +636,6 @@ static void fe_sqrt(const guy &a, guy &r) {
  *
  * a = m - ( (m << 127)/N << 127 ) + (m*r)/N * d * r
  * b = (m << 127)/N * r - (m*r)/N << 127
- *
- * d: 
  *
  * These are multiplications and divisions over integers larger than 2^127,
  * so special routines are provided for this decomposition.
@@ -600,7 +657,7 @@ static void decompose(const u64 m[4], leg &a, leg &b) {
  */
 
 struct ecpt {
-	guy x, y, z, t;
+	guy x, y, t, z;
 };
 
 static CAT_INLINE void ted_neg(ecpt &r) {
@@ -609,110 +666,173 @@ static CAT_INLINE void ted_neg(ecpt &r) {
 	fe_neg(r.t);
 }
 
-static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, bool extended) {
-	// E = (X1 + Y1)^2 + H
-	guy e;
-	fe_add(p.x, p.y, e);
+/*
+ * Extended Twisted Edwards Doubling
+ *
+ * (X2, Y2, T2, Z2) = 2 * (X1, Y1, Z1), where T2 = X2*Y2/Z2
+ *
+ * T2 is computed optionally when calc_t = true.
+ * T2 is necessary for following ted_dbl by ted_add.
+ */
 
-	// A = X1^2, B = Y1^2, C = 2 * Z1^2
-	guy a, b, c;
-	fe_sqr(p.x, a);
-	fe_sqr(p.y, b);
-	fe_sqr(p.z, c);
-	fe_sqr(e, e);
+// r = 2p
+static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
+	// Uses 4S 3M 6A when calc_t=false
+	// calc_t=true: +1M
 
-	// G = -A + B, F = G - C, H = -A - B
-	guy e, f, g, h;
-	fe_neg(a);
-	fe_add(c, c, c);
-	fe_sub(a, b, h);
-	fe_add(a, b, g);
-	fe_add(e, h, e);
-	fe_sub(g, c, f);
+	// Ta <- X^2			= X^2
+	guy Ta;
+	fe_sqr(p.x, Ta);
 
-	// X3 = E * F, Y3 = G * H, T3 = E * H, Z3 = F * G
-	fe_mul(g, h, r.y);
-	if (extended) {
-		fe_mul(e, h, r.t);
+	// t1 <- Y^2			= Y^2
+	guy t1;
+	fe_sqr(p.y, t1);
+
+	// Tb <- Ta + t1		= X^2 + Y^2
+	guy Tb;
+	fe_add(Ta, t1, Tb);
+
+	// Ta <- t1 - Ta		= Y^2 - X^2
+	fe_sub(t1, Ta, Ta);
+
+	// Y2 <- Tb * Ta		Y2 = (X^2 + Y^2) * (Y^2 - X^2)
+	fe_mul(Tb, Ta, r.y);
+
+	// t1 <- Z^2			= Z^2
+	fe_sqr(p.z, t1);
+
+	// t1 <- t1 + t1		= 2 * Z^2
+	fe_add(t1, t1, t1);
+
+	// t1 <- t1 - Ta		= 2 * Z^2 - (Y^2 - X^2)
+	fe_sub(t1, Ta, t1);
+
+	// Z2 <- Ta * t1		Z2 = (Y^2 - X^2) * (2 * Z^2 - (Y^2 - X^2))
+	fe_mul(Ta, t1, r.z);
+
+	// Ta <- X + Y			= X + Y
+	fe_add(p.x, p.y, Ta);
+
+	// Ta <- Ta^2			= (X + Y)^2
+	fe_sqr(Ta, Ta);
+
+	// Ta <- Ta - Tb		= 2 * X * Y = (X + Y)^2 - (X^2 + Y^2)
+	fe_sub(Ta, Tb, Ta);
+
+	// X2 <- Ta * t1		X2 = 2 * X * Y * (2 * Z^2 - (Y^2 - X^2))
+	fe_mul(Ta, t1, r.x);
+
+	// If t is wanted,
+	if (calc_t) {
+		fe_mul(Ta, Tb, r.t);
 	}
-	fe_mul(e, f, r.x);
-	fe_mul(f, g, r.z);
 }
 
-static CAT_INLINE void ted_add(const ecpt &a, const ecpt &b, ecpt &r, bool extended) {
-	// A = (Y1 - X1) * (Y2 - X2)
-	guy c, d;
-	fe_sub(a.y, a.x, c);
-	fe_sub(b.y, b.x, d);
+/*
+ * Extended Twisted Edwards Point Addition
+ *
+ * Preconditions:
+ *
+ * calc_t was set to true on last operation for a and b
+ * a != b: This is a dedicated formula that faults when a = b
+ *
+ * a = (X1, Y1, Z1, T1)
+ *
+ * Using the precomputed coordinates introduced in [1]:
+ * When precomputed=true, b = (X + Y, Y - X, 2T, 2Z)
+ * When precomputed=false, it assumes z2_one=true.
+ */
 
-	// B = (Y1 + X1) * (Y2 + X2)
-	guy g, h, a;
-	fe_add(a.y, a.x, g);
-	fe_add(b.y, b.x, h);
-	fe_mul(c, d, a);
+// r = a + b
+static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool precomputed, const bool calc_t) {
+	// Uses: 7M 6A with precomputed=true z2_one=false calc_t=false
+	// precomputed=false: +3A +1M 
+	// z2_one=true: -1M + 1A
+	// calc_t=true: +1M
 
-	// C = 2 * d * T1 * T2 (can remove multiplication by d if inputs are known to be different)
-	fe_mul(a.t, b.t, c);
-	fe_mul(g, h, b);
-	fe_mul(c, dx2, c); // TODO: Optimize this
+	// If not extended coordinates,
+	if (!precomputed) {
+		// T2 <- x2 + x2	= 2 * x2
+		fe_add(b.x, b.x, b.t);
 
-	// D = 2 * Z1 * Z2
-	fe_mul(a.z, b.z, d);
-
-	// E = B - A, F = D - C, G = D + C, H = B + A
-	guy e, d, f;
-	fe_sub(b, a, e);
-	fe_add(d, d, d);
-	fe_add(b, a, h);
-	fe_sub(d, c, f);
-	fe_add(d, c, g);
-
-	// X3 = E * F, Y3 = G * H, T3 = E * H, Z3 = F * G
-	fe_mul(e, f, r.x);
-	fe_mul(g, h, r.y);
-	if (extended) {
-		fe_mul(e, h, r.t);
+		// T2 <- T2 * y2	= 2 * T2
+		fe_mul(b.t, b.y, b.t);
 	}
-	fe_mul(f, g, r.z);
-}
 
-static CAT_INLINE void ted_sub(const ecpt &a, const ecpt &b, ecpt &r, bool extended) {
-	// Negation: X2 = -X2, T2 = -T2
+	// t1 <- T2 * Z1		= 2 * T2 * Z1
+	guy t1;
+	fe_mul(b.t, a.z, t1);
 
-	// A = (Y1 - X1) * (Y2 + X2)
-	guy c, d, a;
-	fe_sub(a.y, a.x, c);
-	fe_add(b.y, b.x, d);
-	fe_mul(c, d, a);
-
-	// B = (Y1 + X1) * (Y2 - X2)
-	fe_add(a.y, a.x, c);
-	fe_sub(b.y, b.x, d);
-	fe_mul(c, d, b);
-
-	// C = 2 * d * T1 * T2 (can remove multiplication by d if inputs are known to be different)
-	fe_mul(a.t, b.t, c);
-	fe_mul(c, dx2, c);
-	// C = -C
-
-	// D = 2 * Z1 * Z2
-	fe_mul(a.z, b.z, d);
-	fe_add(d, d, d);
-
-	// E = B - A, F = D + C, G = D - C, H = B + A
-	guy e, f, g, h;
-	fe_sub(b, a, e);
-	fe_add(d, c, f);
-	fe_sub(d, c, g);
-	fe_add(b, a, h);
-
-	// X3 = E * F, Y3 = G * H, T3 = E * H, Z3 = F * G
-	fe_mul(e, f, r.x);
-	fe_mul(f, h, r.y);
-	if (extended) {
-		fe_mul(e, h, r.t);
+	// If z2 = 1,
+	guy t2;
+	if (z2_one) {
+		// t2 <- T1 + T1	= 2 * T1 * Z2
+		fe_add(a.t, a.t, t2);
+	} else {
+		// t2 <- T1 * Z2	= 2 * T1 * Z2
+		fe_mul(a.t, b.z, t2);
 	}
-	fe_mul(f, g, r.z);
+
+	// Ta <- t2 - t1		Ta = E = 2 * T1 * Z2 - 2 * T2 * Z1
+	guy Ta;
+	fe_sub(t2, t1, Ta);
+
+	// Tb <- t1 + t2		Tb = F = 2 * T1 * Z2 + 2 * T2 * Z1
+	guy Tb;
+	fe_add(t1, t2, Tb);
+
+	// t2 <- X1 + Y1		= X1 + Y1
+	fe_add(p.x, p.y, t2);
+
+	// If in extended coordinates,
+	if (precomputed) {
+		// Y3 <- Y2			= Y2 - X2
+		// t2 <- Y3 * t2	= (X1 + Y1) * (Y2 - X2)
+		fe_mul(b.y, t2, t2);
+	} else {
+		// Y3 <- y2 - x2	= Y2 - X2
+		fe_sub(b.y, b.x, r.y);
+		// t2 <- Y3 * t2	= (X1 + Y1) * (Y2 - X2)
+		fe_mul(r.y, t2, t2);
+	}
+
+	// t1 <- Y1 - X1		= Y1 - X1
+	fe_sub(a.y, a.x, t1);
+
+	// If in extended coordinates,
+	if (precomputed) {
+		// X3 <- X2			= X2 + Y2
+		// t1 <- X3 * t1	= (X2 + Y2) * (Y1 - X1)
+		fe_mul(b.x, t1, t1);
+	} else {
+		// X3 <- x2 + y2	= X2 + Y2
+		fe_add(b.x, b.y, r.x);
+		// t1 <- X3 * t1	= (X2 + Y2) * (Y1 - X1)
+		fe_mul(r.x, t1, t1);
+	}
+
+	// Z3 <- t2 - t1		G = (X1 + Y1) * (Y2 - X2) - (X2 + Y2) * (Y1 - X1)
+	fe_sub(t2, t1, r.z);
+
+	// t1 <- t1 + t2		H = (X1 + Y1) * (Y2 - X2) + (X2 + Y2) * (Y1 - X1)
+	fe_add(t1, t2, t1);
+
+	// X3 <- Tb * Z3		X3 = G * F
+	fe_mul(Tb, r.z, r.x);
+
+	// Z3 <- t1 * Z3		Z3 = G * H
+	fe_mul(t1, r.z, r.z);
+
+	// Y3 <- Ta * t1		Y3 = E * H
+	fe_mul(Ta, t1, r.y);
+
+	// If t is wanted,
+	if (calc_t) {
+		// T3 <- Ta * Tb	T3 = E * F
+		fe_mul(Ta, Tb, r.t);
+	}
+
+	// Return P + Q = (X3, Y3, Z3, T3)
 }
 
 // Compute affine coordinates for (X,Y)
@@ -739,7 +859,7 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 
 	// C = 1/(1 - d*B)
 	guy c;
-	fe_mul(b, d, c);
+	fe_mul_smallk(b, 109, c);
 	fe_neg(c);
 	fe_add1(c);
 	fe_inv(c, c);
@@ -801,6 +921,11 @@ static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 
 	// If the result is zero, it is on the curve
 	return fe_iszero(e);
+}
+
+// R = kG
+void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
+	// Multiplication by generator point
 }
 
 // R = kP
