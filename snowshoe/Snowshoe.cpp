@@ -128,10 +128,26 @@ static fp_save(const leg &x, u8 *r) {
  */
 
 // TODO: Detect and fail on big-endian platforms
-// TODO: Does this reduce 2^127-1 to zero?
 
 static CAT_INLINE bool fp_iszero(const leg &r) {
 	return r.w == 0;
+}
+
+static CAT_INLINE bool fp_infield(const leg &r) {
+	// If high bit is set,
+	if ((r.i[1] >> 63) != 0) {
+		// Not in field
+		return false;
+	}
+
+	// If r == 2^127-1,
+	if (r.i[0] == 0xffffffffffffffffULL &&
+		r.i[1] == 0x7fffffffffffffffULL) {
+		// Not in field
+		return false;
+	}
+
+	return true;
 }
 
 // r = -a
@@ -466,6 +482,10 @@ static CAT_INLINE bool fe_iszero(const guy &r) {
 	return fp_iszero(r.a) && fp_iszero(r.b);
 }
 
+static CAT_INLINE bool fe_infield(const guy &r) {
+	return fp_infield(r.a) && fp_infield(r.b);
+}
+
 // r = -a
 static CAT_INLINE void fe_neg(guy &r) {
 	// Uses 1A
@@ -755,6 +775,8 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
  * b = (X + Y, Y - X, 2T, 2Z)
  */
 
+// TODO: Check cases where this fails (a = b)
+
 // r = a + b
 static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool calc_t) {
 	// Uses: 7M 6A with z2_one=false calc_t=false
@@ -866,16 +888,18 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 
 	I further check that the point is not x=0, which would be another way
 	to introduce a fault, since x=0 is the identity element.
-
-	I also reduce the input point to fit within my field, as the value of
-	x = 2^127-1 can be provided, which would also be the same as x = 0.
+	The input needs to fit within the field, so the exceptional value of
+	2^127-1 must be checked for, since it is equivalent to 0.
 */
 
 // Verify that the affine point (x,y) exists on the given curve
 static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 	// 0 = 1 + 109*x^2*y^2 + x^2 - y^2
 
-	// TODO: Reduce x,y to fit within field.
+	// If point is outside of field,
+	if (!fe_infield(a.x) || !fe_infield(a.y)) {
+		return false;
+	}
 
 	// If point is the additive identity x=0,
 	if (fe_iszero(a.x)) {
