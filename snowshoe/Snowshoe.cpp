@@ -150,6 +150,11 @@ static CAT_INLINE bool fp_infield(const leg &r) {
 	return true;
 }
 
+// r = a
+static CAT_INLINE void fp_set(const leg &a, leg &r) {
+	r.w = a.w;
+}
+
 // r = -a
 static CAT_INLINE void fp_neg(const leg &a, leg &r) {
 	// Uses 1a 1r
@@ -486,18 +491,36 @@ static CAT_INLINE bool fe_infield(const guy &r) {
 	return fp_infield(r.a) && fp_infield(r.b);
 }
 
-// r = -a
-static CAT_INLINE void fe_neg(guy &r) {
+// r = a
+static CAT_INLINE void fe_set(const guy &a, guy &r) {
 	// Uses 1A
 
-	fp_neg(r.b);
+	fp_set(a.a, r.a);
+	fp_set(a.b, r.b);
+}
+
+// r = a'
+static CAT_INLINE void fe_conj(const guy &a, guy &r) {
+	// Uses 1A
+
+	fp_set(a.a, r.a);
+	fp_neg(a.b, r.b);
+}
+
+// r = -a
+static CAT_INLINE void fe_neg(const guy &a, guy &r) {
+	// Uses 2A
+
+	fp_neg(a.a, r.a);
+	fp_neg(a.a, r.b);
 }
 
 // r = r + (1 + 0i)
-static CAT_INLINE void fe_add1(guy &r) {
+static CAT_INLINE void fe_add1(const guy &a, guy &r) {
 	// Uses 1A
 
-	fp_add1(r.a);
+	fp_add1(a.a, r.a);
+	fp_set(a.b, r.b);
 }
 
 // r = a + b
@@ -623,35 +646,6 @@ static const u64 ENDO_LAMBDA[4] = {
 }
 
 /*
- * In Twisted Edwards affine coordinates:
- *
- * endo(x,y) = (sqrt(conj(u)/u)*conj(x), conj(y)), p = 2^127-1, u = 2 + i
- *
- * xek = sqrt(conj(u)/u)
- * = 119563271493748934302613455993671912329 + 68985359527028636873539608271459718931*i
- * = 0x59F30C694ED33218695AB4D883DE0B89 + 0x33E618D29DA66430D2B569B107BC1713*i
- *
- * MAGMA script using [6]:
- *
- * p := 2^127-1;
- * K<w> := GF(p^2);
- * xek := SquareRoot((2-w)/(2+w));
- * print xek;
- */
-
-static const guy ENDO_XEK = {
-	{	// Real part (a):
-		0x695AB4D883DE0B89ULL,
-		0x59F30C694ED33218ULL
-	},
-	{	// Imaginart part (b):
-		0xD2B569B107BC1713ULL,
-		0x33E618D29DA66430ULL
-	}
-};
-
-
-/*
  * m = a + b * y (mod N)  a, b < 2^127
  *
  * N: The number of points in the group, a large prime with small cofactor h
@@ -691,10 +685,103 @@ struct ecpt {
 	guy x, y, t, z;
 };
 
-static CAT_INLINE void ted_neg(ecpt &r) {
+// Generator point (a randomly selected point on the curve)
+static const ecpt TED_GENPT = {
+	{	// x
+		{	// a
+			0x0ULL,
+			0x0ULL
+		},
+		{	// b
+			0x0ULL,
+			0x0ULL
+		}
+	},
+	{	// y
+		{	// a
+			0x0ULL,
+			0x0ULL
+		},
+		{	// b
+			0x0ULL,
+			0x0ULL
+		}
+	},
+	{	// 2t
+		{	// a
+			0x0ULL,
+			0x0ULL
+		},
+		{	// b
+			0x0ULL,
+			0x0ULL
+		}
+	}
+};
+
+static CAT_INLINE void ted_neg(const ecpt &a, ecpt &r) {
 	// -(X : Y : T : Z) = (-X : Y : -T : Z)
-	fe_neg(r.y);
-	fe_neg(r.t);
+
+	fe_neg(a.x, r.x);
+	fe_set(a.y, r.y);
+	fe_neg(a.t, r.t);
+	fe_set(a.z, r.z);
+}
+
+/*
+ * In Twisted Edwards affine coordinates:
+ *
+ * endo(x,y) = (sqrt(conj(u)/u)*conj(x), conj(y)), p = 2^127-1, u = 2 + i
+ *
+ * xek = sqrt(conj(u)/u)
+ * = 119563271493748934302613455993671912329 + 68985359527028636873539608271459718931*i
+ * = 0x59F30C694ED33218695AB4D883DE0B89 + 0x33E618D29DA66430D2B569B107BC1713*i
+ *
+ * MAGMA script using [6]:
+ *
+ * p := 2^127-1;
+ * K<w> := GF(p^2);
+ * xek := SquareRoot((2-w)/(2+w));
+ * print xek;
+ */
+
+static const guy ENDO_XEK = {
+	{	// Real part (a):
+		0x695AB4D883DE0B89ULL,
+		0x59F30C694ED33218ULL
+	},
+	{	// Imaginart part (b):
+		0xD2B569B107BC1713ULL,
+		0x33E618D29DA66430ULL
+	}
+};
+
+/*
+ * Twisted Edwards Endomorphism
+ *
+ * Input:
+ *
+ * Affine point p = (X1, Y1)
+ *
+ * Output:
+ *
+ * Affine point r = (X2, Y2)
+ *
+ * Y2 = conj(Y1)
+ * X2 = ENDO_XEK * conj(X1)
+ */
+
+// r = ENDO_LAMBDA * p
+static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
+	// X2 <- X1'
+	guy t1;
+	fe_conj(p.x, t1);
+
+	// X2 <- ENDO_XEK * X2
+	fe_mul(t1, ENDO_XEK, r.x);
+
+	// Y2 <- Y1'
+	fe_conj(p.y, r.y);
 }
 
 /*
@@ -760,81 +847,83 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
 }
 
 /*
- * Extended Twisted Edwards Point Addition [1]
+ * Extended Twisted Edwards Unified Point Addition [5]
  *
- * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, 2 * T2, 2 * Z2)
+ * The dedicated point formula is too dangerous, since with simultaneous
+ * multiplication going on it is tricky to prevent the a = b fault case
+ * where the dedicated point formula fails.  I was not able to find any
+ * research on this fault attack to see if it causes real problems so I
+ * am playing it safe here.
  *
- * Preconditions:
+ * Using precomputed point coordinates from [1]:
+ * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, T2, 2 * Z2)
  *
- * calc_t was set to true on last operation for a and b
- * a != b: This is a dedicated formula that faults when a = b
- *
- * a = (X1, Y1, T1, Z1)
- * b = (X2 + Y2, Y2 - X2, 2*T2, 2*Z2)
+ * Precondition: calc_t was set to true on last operation for a and b
  */
-
-// TODO: Check cases where this fails (a = b)
 
 // r = a + b
 static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool calc_t) {
-	// Uses: 7M 6A with z2_one=false calc_t=false
+	// Uses: 7M 6A 1m with z2_one=false calc_t=false
 	// z2_one=true: -1M + 1A
 	// calc_t=true: +1M
 
-	// t1 <- T2 * Z1		= 2 * T2 * Z1
-	guy t1;
-	fe_mul(b.t, a.z, t1);
+	// w1 <- T1 * T2 = t1 * t2
+	guy w1;
+	fe_mul(b.t, a.t, w1);
+
+	// C = w1 <- 2 * d * T1 * T2 = w1 * 2d
+	fe_mul_smallk(w1, 2 * TED_D, w1);
 
 	// If z2 = 1,
-	guy t2;
+	guy w2;
 	if (z2_one) {
-		// t2 <- T1 + T1	= 2 * T1 * Z2
-		fe_add(a.t, a.t, t2);
+		// D = w2 <- 2 * Z1 * (Z2=1) = z1 + z1
+		fe_add(a.z, a.z, w2);
 	} else {
-		// t2 <- T1 * Z2	= 2 * T1 * Z2
-		fe_mul(a.t, b.z, t2);
+		// D = w2 <- Z1 * (2 * Z2) = z1 * z2
+		fe_mul(a.z, b.z, w2);
 	}
 
-	// Ta <- t2 - t1		Ta = E = 2 * T1 * Z2 - 2 * T2 * Z1
-	guy Ta;
-	fe_sub(t2, t1, Ta);
+	// F = w3 <- D - C = w2 - w1
+	guy w3;
+	fe_sub(w2, w1, w3);
 
-	// Tb <- t1 + t2		Tb = F = 2 * T1 * Z2 + 2 * T2 * Z1
-	guy Tb;
-	fe_add(t1, t2, Tb);
+	// G = w4 <- D + C = w2 + w1
+	guy w4;
+	fe_add(w1, w2, w4);
 
-	// t2 <- X1 + Y1		= X1 + Y1
-	fe_add(p.x, p.y, t2);
+	// w2 <- Y1 + X1 = y1 + x1
+	fe_add(a.x, a.y, w2);
 
-	// t2 <- Y2 * t2		= (X1 + Y1) * (Y2 - X2)
-	fe_mul(b.y, t2, t2);
+	// B = w2 <- (Y1 + X1) * (Y2 + X2) = w2 * x2
+	fe_mul(b.x, w2, w2);
 
-	// t1 <- Y1 - X1		= Y1 - X1
-	fe_sub(a.y, a.x, t1);
+	// w1 <- Y1 - X1 = y1 - x1
+	fe_sub(a.y, a.x, w1);
 
-	// t1 <- X2 * t1		= (X2 + Y2) * (Y1 - X1)
-	fe_mul(b.x, t1, t1);
+	// A = w1 <- (Y1 - X1) * (Y2 - X2) = w1 * y2
+	fe_mul(b.y, w1, w1);
 
-	// Z3 <- t2 - t1		G = (X1 + Y1) * (Y2 - X2) - (X2 + Y2) * (Y1 - X1)
-	fe_sub(t2, t1, r.z);
+	// E = z3 <- B - A = w2 - w1
+	fe_sub(w2, w1, r.z);
 
-	// t1 <- t1 + t2		H = (X1 + Y1) * (Y2 - X2) + (X2 + Y2) * (Y1 - X1)
-	fe_add(t1, t2, t1);
+	// H = w1 <- B + A = w1 + w2
+	fe_add(w1, w2, w1);
 
-	// X3 <- Tb * Z3		X3 = G * F
-	fe_mul(Tb, r.z, r.x);
-
-	// Z3 <- t1 * Z3		Z3 = G * H
-	fe_mul(t1, r.z, r.z);
-
-	// Y3 <- Ta * t1		Y3 = E * H
-	fe_mul(Ta, t1, r.y);
+	// X3 = x3 <- E * F = r3 * w3
+	fe_mul(r.z, w3, r.x);
 
 	// If t is wanted,
 	if (calc_t) {
-		// T3 <- Ta * Tb	T3 = E * F
-		fe_mul(Ta, Tb, r.t);
+		// T3 = t3 <- E * H = r3 * w1
+		fe_mul(r.z, w1, r.t);
 	}
+
+	// Y3 = y3 <- G * H = w1 * w4
+	fe_mul(w1, w4, r.y);
+
+	// Z3 = z3 <- F * G = w3 * w4
+	fe_mul(w3, w4, r.z);
 }
 
 // Compute affine coordinates for (X,Y)
@@ -862,32 +951,35 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 	// C = 1/(1 - d*B)
 	guy c;
 	fe_mul_smallk(b, TED_D, c);
-	fe_neg(c);
-	fe_add1(c);
+	fe_neg(c, c);
+	fe_add1(c, c);
 	fe_inv(c, c);
 
 	// y = sqrt(C*(B+1))
-	fe_add1(b);
+	fe_add1(b, b);
 	fe_mul(c, b, b);
 	fe_sqrt(b, r.y);
 }
 
 /*
-	When the input point is not validated or other countermeasures are not
-	in place, it is possible to provide an input point on the twist of the
-	curve.  As shown in [7] this can lead to an active attack on the
-	cryptosystem.
-
-	Bernstein's Curve25519 [8] prevents this attack by being "twist-secure",
-	for example, rather than validating the input.
-
-	To avoid any invalid point fault attacks in my cryptosystem, I validate
-	that the input point (x, y) is on the curve, which is a cheap operation.
-
-	I further check that the point is not x = 0, which would be another way
-	to introduce a fault, since x = 0 is the identity element.
-	The input needs to fit within the field, so the exceptional value of
-	2^127-1 must be checked for, since it is equivalent to 0.
+ * Input validation:
+ *
+ * When the input point is not validated or other countermeasures are not
+ * in place, it is possible to provide an input point on the twist of the
+ * curve.  As shown in [7] this can lead to an active attack on the
+ * cryptosystem.
+ *
+ * Bernstein's Curve25519 [8] prevents this attack by being "twist-secure",
+ * for example, rather than validating the input.
+ *
+ * To avoid any invalid point fault attacks in my cryptosystem, I validate
+ * that the input point (x, y) is on the curve, which is a cheap operation.
+ *
+ * I further check that the point is not x = 0, which would be another way
+ * to introduce a fault, since x = 0 is the identity element.
+ *
+ * The input needs to fit within the field, so the exceptional value of
+ * 2^127-1 must be checked for, since it is equivalent to 0.
 */
 
 // Verify that the affine point (x, y) exists on the given curve
@@ -927,6 +1019,10 @@ static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 // R = kG
 void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
 	// Multiplication by generator point
+
+	// k = a + b*s, s = endomorphism scalar
+	u32 a[4], b[4];
+	decompose(k, a, b);
 }
 
 // R = kP
@@ -937,7 +1033,7 @@ void Snowshoe::Mul(const u32 k[8], ecpt &P, ecpt &R) {
 
 	// Calculate second base point Q = s*P
 	ecpt Q;
-	endomorph(P, Q);
+	ted_endo(P, Q);
 
 	// Precompute table
 
@@ -958,11 +1054,11 @@ void Snowshoe::SiMul(const u32 a[8], const ecpt &P, const u32 b[8], const ecpt &
 
 	// Calculate second base point P1 = s*P
 	ecpt P1;
-	endomorph(P, P1);
+	ted_endo(P, P1);
 
 	// Calculate second base point Q1 = s*Q
 	ecpt Q1;
-	endomorph(Q, Q1);
+	ted_endo(Q, Q1);
 
 	// Precompute table
 
