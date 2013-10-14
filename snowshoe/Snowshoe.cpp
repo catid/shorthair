@@ -65,7 +65,7 @@ using namespace cat;
  *
  * [2] "Division by Invariant Integers using Multiplication" (Granlund Montgomery 1991)
  * http://pdf.aminer.org/000/542/596/division_by_invariant_integers_using_multiplication.pdf
- * Modulus on fixed field in constant time
+ * Division on fixed field in constant time
  *
  * [3] "Endomorphisms for Faster Elliptic Curve Cryptography on a Large Class of Curves" (Galbraith Lin Scott 2008)
  * http://eprint.iacr.org/2008/194
@@ -73,7 +73,7 @@ using namespace cat;
  *
  * [4] "Endomorphisms for Faster Elliptic Curve Cryptography on a Large Class of Curves" (Galbraith Lin Scott 2009)
  * http://www.iacr.org/archive/eurocrypt2009/54790519/54790519.pdf
- * Revises 2-GLV-GLS method math
+ * More information on 2-GLV-GLS method math
  *
  * [5] "Twisted Edwards Curves Revisited" (Hisil Wong Carter Dawson 2008)
  * http://www.iacr.org/archive/asiacrypt2008/53500329/53500329.pdf
@@ -90,6 +90,27 @@ using namespace cat;
  * [8] "Curve25519: new Diffie-Hellman speed records" (Bernstein 2006)
  * http://cr.yp.to/ecdh/curve25519-20060209.pdf
  * Example of a conservative elliptic curve cryptosystem
+ *
+ * [9] "DECOMPOSITION OF AN INTEGER FOR EFFICIENT IMPLEMENTATION OF ELLIPTIC CURVE CRYPTOSYSTEM" (Park 2005)
+ * http://www.mathnet.or.kr/mathnet/kms_tex/982868.pdf
+ * Algorithm for splitting a scalar
+ */
+
+/*
+ * 127-bit F(p) finite field arithmetic
+ *
+ * This is simply bigint math modulo Mersenne prime p = (2^^127 - 1),
+ * which admits perhaps the simplest, timing-invariant reduction.
+ *
+ * 2^^31 - 1 : Good for ARM systems, but extension fields are not ideal
+ * + Fp^7 -> 217-bit keys, too far from targetted security level
+ * + Weil Descent attacks apply to Fp^8/9
+ *
+ * Other prime (2^^61 - 1): Pretty far from a word size.
+ *
+ * I care mainly about server performance, with 64-bit Linux VPS in mind, and
+ * the Intel x86-64 instruction set has a fast 64x64->128 multiply instruction
+ * that we can exploit to simplify the code and speed up math on this field.
  */
 
 // GCC: Use builtin 128-bit type
@@ -110,24 +131,8 @@ static fp_save(const leg &x, u8 *r) {
 	*(u64*)(r + 8) = getLE64(x.i[1]);
 }
 
-/*
- * 127-bit F(p) finite field arithmetic
- *
- * This is simply bigint math modulo Mersenne prime p = (2^^127 - 1),
- * which admits perhaps the simplest, timing-invariant reduction.
- *
- * 2^^31 - 1 : Good for ARM systems, but extension fields are not ideal
- * + Fp^7 -> 217-bit keys, too far from targetted security level
- * + Weil Descent attacks apply to Fp^8/9
- *
- * Other prime (2^^61 - 1): Pretty far from a word size.
- *
- * I care mainly about server performance, with 64-bit Linux VPS in mind, and
- * the Intel x86-64 instruction set has a fast 64x64->128 multiply instruction
- * that we can exploit to simplify the code and speed up math on this field.
- */
-
 // TODO: Detect and fail on big-endian platforms
+// TODO: Validate these.
 
 static CAT_INLINE bool fp_iszero(const leg &r) {
 	return r.w == 0;
@@ -470,7 +475,6 @@ static CAT_INLINE void fp_inv(const leg &a, leg &r) {
 	fp_mul(n1, a, r);
 }
 
-
 /*
  * 254-bit F(p^^2) optimal extension field (OEF) arithmetic
  *
@@ -629,13 +633,83 @@ static void fe_sqrt(const guy &a, guy &r) {
 }
 
 /*
+ * #E'(Fp^2) = (p - 1)^2 + t^2
+ * = 28948022309329048855892746252171976962839764946219840790663900086538002237076
+ * ^ This is my secure group.
+ *
+ * #E(Fp^2) = (p + 1)^2 - t^2
+ * = 28948022309329048855892746252171976963114662652758564302138142702555026159984
+ * ^ This is the twist of my secure group, which is not secure.
+ *
+ * Solving for t and verifying both expressions by using [6]:
+ *
+ * p := 2^127-1;
+ *
+ * EP := 28948022309329048855892746252171976962839764946219840790663900086538002237076;
+ * Factorization(EP);
+ *
+ * TP := 28948022309329048855892746252171976963114662652758564302138142702555026159984;
+ * Factorization(TP);
+ *
+ * pm1s := (p - 1)*(p - 1);
+ * pp1s := (p + 1)*(p + 1);
+ *
+ * tsqrp := pp1s - TP;
+ * print tsqrp;
+ *
+ * tsqrm := EP - pm1s;
+ * print tsqrm;
+ *
+ * print SquareRoot(tsqrm);
+ * print SquareRoot(tsqrp);
+ *
+ * Yields:
+ *
+ * [ <2, 2>, <7237005577332262213973186563042994240709941236554960197665975021634500559269, 1> ]
+ * [ <2, 4>, <3, 1>, <11, 1>, <181, 1>, <443, 1>, <1789, 1>, <3041, 1>, <80447, 1>,
+ * <2427899077100477, 1>, <3220268376816859, 1>, <199822028697017221643157029, 1> ]
+ * 202833513651576707726253299423256250000
+ * 202833513651576707726253299423256250000
+ * 14241963124919847500.0000000000
+ * 14241963124919847500.0000000000
+ *
+ * Switching TP with EP above yields something that is not a perfect square, which
+ * serves to validate the above expressions.
+ *
  * from [3]: endo(P) = y*P
  *
- * y(lambda)^2 + 1 = 0 (mod q)
- * = sqrt(-1) (mod q)
- * = sqrt(q-1) (mod q)
- * = Modsqrt(q-1,q) using [6]
- * = 0xEC2108006820E1AB0A9480CCBB42BE2A827C49CDE94F5CCCBF95D17BD8CF58F
+ * t*y + (1 - p) = 0 (mod r)
+ * y = (p - 1) * t^-1 (mod r)
+ *
+ * It should also be true that y = sqrt(-1) mod r
+ *
+ * Using [6]:
+ *
+ * t := 14241963124919847500;
+ * r := 7237005577332262213973186563042994240709941236554960197665975021634500559269;
+ * p := 2^127-1;
+ *
+ * y := (p - 1) * InverseMod(t, r) mod r;
+ *
+ * print y;
+ * print Modsqrt(r - 1, r);
+ * print y:Hex;
+ * print Modsqrt(r - 1, r):Hex;
+ *
+ * Yields:
+ *
+ * 6675262090232833354261459078081456826396694204445414604517147996175437985167
+ * 6675262090232833354261459078081456826396694204445414604517147996175437985167
+ * 0xEC2108006820E1AB0A9480CCBB42BE2A827C49CDE94F5CCCBF95D17BD8CF58F
+ * 0xEC2108006820E1AB0A9480CCBB42BE2A827C49CDE94F5CCCBF95D17BD8CF58F
+ *
+ * Now we should also verify that the homomorphism takes us from an affine
+ * point and results in the same thing as multiplying by lambda:
+ *
+ * According to [5] when u = 2 + i, cx = sqrt(u/u');
+ * the homomorphism V(x,y) = (c * x', y') = lambda * (x,y)
+ *
+ * TODO: Verify this actually works in MAGMA.
  */
 
 static const u64 ENDO_LAMBDA[4] = {
@@ -646,31 +720,13 @@ static const u64 ENDO_LAMBDA[4] = {
 }
 
 /*
- * m = a + b * y (mod N)  a, b < 2^127
- *
- * N: The number of points in the group, a large prime with small cofactor h
- * m: The secret scalar
- * y: The scalar multiplier performed by the endomorphism on the curve
- * r: Can be calculated from the relation: y = (1 + e*p)/r (mod N)
- *
- * This can be calculated, again from [1]:
- *
- * a = m - ( (m << 127)/N << 127 ) + (m*r)/N * d * r
- * b = (m << 127)/N * r - (m*r)/N << 127
- *
- * These are multiplications and divisions over integers larger than 2^127,
- * so special routines are provided for this decomposition.
- *
- * To make the scalar decomposition run in constant time, I recognized that
- * the divisions are all by a constant
+ * Decompose a scalar k into two sub-scalars a, b s.t. a + b * y = k
+ * using the decomposition algorithm from [9],
+ * and bigint division algorithm from [2].
  */
 
 static void decompose(const u64 m[4], leg &a, leg &b) {
-	// e = 1, p = 2^127 - 1
-	// (1 + e*p) = 2^127
-	// m*2^127 = m << 127
-	// r = 
-	// a = m - ((m << 127)/N << 127) + (
+	// TODO: Read [9].
 }
 
 /*
@@ -685,36 +741,38 @@ struct ecpt {
 	guy x, y, t, z;
 };
 
+// TODO: Generate a random generator point and its homomorphism.
+
 // Generator point (a randomly selected point on the curve)
 static const ecpt TED_GENPT = {
 	{	// x
 		{	// a
-			0x0ULL,
-			0x0ULL
+			0x16848FED55A2F740ULL,
+			0x34FE19AE9BC66F8FULL
 		},
 		{	// b
-			0x0ULL,
-			0x0ULL
+			0x2C1C732968A9F645ULL,
+			0x7FDF340E3FDBDED5ULL
 		}
 	},
 	{	// y
 		{	// a
-			0x0ULL,
-			0x0ULL
+			0x1254212326DF1DE1ULL,
+			0x5C86D9E7FA584F56ULL
 		},
 		{	// b
-			0x0ULL,
-			0x0ULL
+			0x5A3840B05DCFDCCBULL,
+			0x6202F71A1F84D7DEULL
 		}
 	},
 	{	// 2t
 		{	// a
-			0x0ULL,
-			0x0ULL
+			0x93E3B0F29F10E97DULL,
+			0x73D22FFBBD0EB465ULL
 		},
 		{	// b
-			0x0ULL,
-			0x0ULL
+			0x82B867DDC01F3559ULL,
+			0x3148E5AC334308FCULL
 		}
 	}
 };
@@ -743,6 +801,8 @@ static CAT_INLINE void ted_neg(const ecpt &a, ecpt &r) {
  * K<w> := GF(p^2);
  * xek := SquareRoot((2-w)/(2+w));
  * print xek;
+ *
+ * TODO: Verify this is the right one to use.
  */
 
 static const guy ENDO_XEK = {
@@ -782,6 +842,8 @@ static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
 
 	// Y2 <- Y1'
 	fe_conj(p.y, r.y);
+
+	// TODO: Verify this works.
 }
 
 /*
@@ -1023,6 +1085,14 @@ void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
 	// k = a + b*s, s = endomorphism scalar
 	u32 a[4], b[4];
 	decompose(k, a, b);
+
+	// Precompute endomorphism
+
+	// TODO: Start by doing naive left-to-right double-add to verify that it works.
+	// Check the result using MAGMA.
+	// Then implement GLV-SAC from [1].
+	// Verify the result again against the reference version.
+	// Then implement the other two:
 }
 
 // R = kP
