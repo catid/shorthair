@@ -155,6 +155,16 @@ static CAT_INLINE bool fp_infield(const leg &r) {
 	return true;
 }
 
+// r = k
+static CAT_INLINE void fp_set_smallk(const u32 k, leg &r) {
+	r.w = k;
+}
+
+// r = 0
+static CAT_INLINE void fp_zero(leg &r) {
+	r.w = 0;
+}
+
 // r = a
 static CAT_INLINE void fp_set(const leg &a, leg &r) {
 	r.w = a.w;
@@ -340,133 +350,44 @@ static CAT_INLINE void fp_inv(const leg &a, leg &r) {
 	fp_sqr(n2, n3);
 	fp_sqr(n3, n3);
 	fp_mul(n3, n2, n3);
-	fp_sqr(n3, n4);
-	fp_sqr(n4, n4);
-	fp_sqr(n4, n4);
-	fp_sqr(n4, n4);
+	fp_sqr(n3, n4); fp_sqr(n4, n4);
+	fp_sqr(n4, n4); fp_sqr(n4, n4);
 	fp_mul(n3, n4, n4);
-	fp_sqr(n4, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
-	fp_sqr(n5, n5);
+	fp_sqr(n4, n5); fp_sqr(n5, n5); fp_sqr(n5, n5); fp_sqr(n5, n5);
+	fp_sqr(n5, n5); fp_sqr(n5, n5); fp_sqr(n5, n5); fp_sqr(n5, n5);
 	fp_mul(n5, n4, n5);
-	fp_sqr(n5, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
-	fp_sqr(n6, n6);
+	fp_sqr(n5, n6); fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6);
+	fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6);
+	fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6);
+	fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6); fp_sqr(n6, n6);
 	fp_mul(n5, n6, n6);
-	fp_sqr(n6, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
+	fp_sqr(n6, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
 	fp_mul(n1, n6, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
 	fp_mul(n1, n6, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
 	fp_mul(n1, n5, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
 	fp_mul(n1, n4, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
-	fp_sqr(n1, n1);
+	fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1); fp_sqr(n1, n1);
 	fp_mul(n1, n3, n1);
 	fp_sqr(n1, n1);
 	fp_mul(n1, a, n1);
@@ -493,6 +414,12 @@ static CAT_INLINE bool fe_iszero(const guy &r) {
 
 static CAT_INLINE bool fe_infield(const guy &r) {
 	return fp_infield(r.a) && fp_infield(r.b);
+}
+
+// r = (k + 0i)
+static CAT_INLINE void fe_set_smallk(const u32 k, guy &r) {
+	fp_set_smallk(k, r.a);
+	fp_zero(r.b);
 }
 
 // r = a
@@ -765,7 +692,7 @@ static const ecpt TED_GENPT = {
 			0x6202F71A1F84D7DEULL
 		}
 	},
-	{	// 2t
+	{	// t
 		{	// a
 			0x93E3B0F29F10E97DULL,
 			0x73D22FFBBD0EB465ULL
@@ -856,7 +783,7 @@ static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
  */
 
 // r = 2p
-static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
+static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool z_one, const bool calc_t) {
 	// Uses 4S 3M 6A when calc_t=false
 	// calc_t=true: +1M
 
@@ -878,11 +805,17 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool calc_t) {
 	// Y2 <- Tb * Ta		Y2 = (X^2 + Y^2) * (Y^2 - X^2)
 	fe_mul(Tb, Ta, r.y);
 
-	// t1 <- Z^2			= Z^2
-	fe_sqr(p.z, t1);
+	// If z = 1,
+	if (z_one) {
+		// t1 = 2
+		fe_set_smallk(2, t1);
+	} else {
+		// t1 <- Z^2			= Z^2
+		fe_sqr(p.z, t1);
 
-	// t1 <- t1 + t1		= 2 * Z^2
-	fe_add(t1, t1, t1);
+		// t1 <- t1 + t1		= 2 * Z^2
+		fe_add(t1, t1, t1);
+	}
 
 	// t1 <- t1 - Ta		= 2 * Z^2 - (Y^2 - X^2)
 	fe_sub(t1, Ta, t1);
@@ -1087,6 +1020,10 @@ void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
 	decompose(k, a, b);
 
 	// Precompute endomorphism
+
+	ecpt P;
+	ted_dbl(TED_GENPT, P, true, false);
+	ted_dbl(P, P, false, true);
 
 	// TODO: Start by doing naive left-to-right double-add to verify that it works.
 	// Check the result using MAGMA.
