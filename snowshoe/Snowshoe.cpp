@@ -41,7 +41,7 @@ using namespace cat;
  *
  * Curve specification:
  * + Field math: Fp^2 with p = 2^127-1
- * + Curve shape: E:auxx + yy = duxxyy + 1 (mod Fp^2), u = 2 + i, a = -1, d=109
+ * + Curve shape: E:auxx + yy = duxxyy + 1, u = 2 + i, a = -1, d=109
  * + Group size: #E = 4*q,
  * + q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA6261414C0DC87D3CE9B68E3B09E01A5
  *
@@ -54,6 +54,25 @@ using namespace cat;
  * + Timing-invariant arithmetic: Reduction is branchless
  * + Timing-invariant group laws: Twisted Edwards [5]
  * + Timing-invariant point multiplication: Using GLV-SAC exponent recoding [1]
+ */
+
+/*
+ * Alternative similar curves:
+ *
+ * u = 2 + i, a = -1, E:auxx+yy=duxxyy+1
+ * d=109 : #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFA6261414C0DC87D3CE9B68E3B09E01A5
+ * d=139 : #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBE279B04A75463D09403332A27015D91
+ * d=191 : #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF826EDB49112B894254575EA3A0C8BDC5
+ * d=1345: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF80490915366733181B4DC41442AAF491
+ * d=1438: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC96E66D7F2A4B799044761AE30653065
+ * d=1799: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF8FF32A5C1ACEC774E308CDB3636F2311
+ * d=2076: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF81EBFEA8A9E1FB42ED4A6EBB16B24A91
+ * d=2172: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF819920B3F8F71CD85DD3F4242C1B0E11
+ * d=2303: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF9B3E69111FF31FA521F8B59CC48B4101
+ * d=2377: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF94B9FB29B4A87B1DAEFA7A69FC19FD11
+ * d=2433: #E = 4*q, q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF8F4C87E0F8EB73ABCB41D9C4CF92FC41
+ *
+ * None of these are twist-secure.
  */
 
 /*
@@ -99,14 +118,14 @@ using namespace cat;
 /*
  * 127-bit F(p) finite field arithmetic
  *
- * This is simply bigint math modulo Mersenne prime p = (2^^127 - 1),
+ * This is simply bigint math modulo Mersenne prime p = (2^127 - 1),
  * which admits perhaps the simplest, timing-invariant reduction.
  *
- * 2^^31 - 1 : Good for ARM systems, but extension fields are not ideal
+ * 2^31 - 1 : Good for ARM systems, but extension fields are not ideal
  * + Fp^7 -> 217-bit keys, too far from targetted security level
  * + Weil Descent attacks apply to Fp^8/9
  *
- * Other prime (2^^61 - 1): Pretty far from a word size.
+ * Other prime (2^61 - 1): Pretty far from a word size.
  *
  * I care mainly about server performance, with 64-bit Linux VPS in mind, and
  * the Intel x86-64 instruction set has a fast 64x64->128 multiply instruction
@@ -119,14 +138,14 @@ union leg {
 	u64 i[2];
 };
 
-// Load leg from endian-neutral data bytes
-static fp_load(const u8 *x, leg &r) {
+// Load leg from endian-neutral data bytes (16)
+static void fp_load(const u8 *x, leg &r) {
 	r.i[0] = getLE64(*(u64*)x);
 	r.i[1] = getLE64(*(u64*)(x + 8));
 }
 
-// Save leg to endian-neutral data bytes
-static fp_save(const leg &x, u8 *r) {
+// Save leg to endian-neutral data bytes (16)
+static void fp_save(const leg &x, u8 *r) {
 	*(u64*)r = getLE64(x.i[0]);
 	*(u64*)(r + 8) = getLE64(x.i[1]);
 }
@@ -134,10 +153,12 @@ static fp_save(const leg &x, u8 *r) {
 // TODO: Detect and fail on big-endian platforms
 // TODO: Validate these.
 
+// Check if r is zero
 static CAT_INLINE bool fp_iszero(const leg &r) {
 	return r.w == 0;
 }
 
+// Verify that 0 <= r < p
 static CAT_INLINE bool fp_infield(const leg &r) {
 	// If high bit is set,
 	if ((r.i[1] >> 63) != 0) {
@@ -182,16 +203,31 @@ static CAT_INLINE void fp_neg(const leg &a, leg &r) {
 	r.i[1] &= 0x7fffffffffffffffULL;
 }
 
-// r = r + 1
-static CAT_INLINE void fp_add1(leg &r) {
+// r = r + (u32)k
+static CAT_INLINE void fp_add_smallk(const u32 k, leg &r) {
 	// Uses 1a 1r
-	u128 s = r.w + 1;
+	u128 s = r.w + k;
 
 	// Reduce
 	r.w = 0 - (s + (((u64)(s >> 64) >> 63) ^ 1));
 
 	// Eliminate high bit
 	r.i[1] &= 0x7fffffffffffffffULL;
+}
+
+// Reduce r < p in the case where r = p
+static CAT_INLINE void fe_red1271(guy &r) {
+	// Branchlessly check if all the bits are set
+	u64 t = r.i[0] & (t.i[1] | 0x8000000000000000ULL);
+	u32 tw = (u32)t & (u32)(t >> 32);
+	tw &= tw >> 16;
+	tw &= tw >> 8;
+	tw &= tw >> 4;
+	tw &= tw >> 2;
+	tw &= tw >> 1;
+
+	// If so, add 1 and roll it back to zero else result is unchanged
+	fp_add_smallk(tw & 1, r);
 }
 
 // r = a + b
@@ -397,7 +433,7 @@ static CAT_INLINE void fp_inv(const leg &a, leg &r) {
 }
 
 /*
- * 254-bit F(p^^2) optimal extension field (OEF) arithmetic
+ * 254-bit GF(p^2) optimal extension field (OEF) arithmetic
  *
  * This is simply complex number math (a + ib),
  * which is about 75% faster than 256-bit pseudo-Mersenne arithmetic for
@@ -408,12 +444,35 @@ struct guy {
 	leg a, b;
 };
 
+// Load guy from endian-neutral data bytes (32)
+static void fe_load(const u8 *x, guy &r) {
+	fp_load(x, r.a);
+	fp_load(x + 16, r.b);
+}
+
+// Save guy to endian-neutral data bytes (32)
+static void fe_save(const guy &x, u8 *r) {
+	fp_save(x.a, r);
+	fp_save(x.b, r + 16);
+}
+
+// Check if r is zero
 static CAT_INLINE bool fe_iszero(const guy &r) {
 	return fp_iszero(r.a) && fp_iszero(r.b);
 }
 
+// Validate that r is within field
 static CAT_INLINE bool fe_infield(const guy &r) {
 	return fp_infield(r.a) && fp_infield(r.b);
+}
+
+// Reduce r
+static CAT_INLINE void fe_red1271(guy &r) {
+	// If a or b = 2^127-1, set that one to 0.
+	// NOTE: The math functions already ensure that a,b < 2^127
+
+	fp_red1271(r.a);
+	fp_red1271(r.b);
 }
 
 // r = (k + 0i)
@@ -446,11 +505,11 @@ static CAT_INLINE void fe_neg(const guy &a, guy &r) {
 	fp_neg(a.a, r.b);
 }
 
-// r = r + (1 + 0i)
-static CAT_INLINE void fe_add1(const guy &a, guy &r) {
+// r = r + (k + 0i)
+static CAT_INLINE void fe_add_smallk(const u32 k, const guy &a, guy &r) {
 	// Uses 1A
 
-	fp_add1(a.a, r.a);
+	fp_add_smallk(k, a.a, r.a);
 	fp_set(a.b, r.b);
 }
 
@@ -652,12 +711,12 @@ static const u64 ENDO_LAMBDA[4] = {
  * and bigint division algorithm from [2].
  */
 
-static void decompose(const u64 m[4], leg &a, leg &b) {
+static void ted_split(const u64 m[4], leg &a, leg &b) {
 	// TODO: Read [9].
 }
 
 /*
- * Extended Twisted Edwards Group Laws
+ * Extended Twisted Edwards Group Laws [5]
  *
  * Curve: a*u*x^2 + y^2 = d*u*x^2*y^2 /Fp^2, p=2^127-1, a=-1, d=109, u=2+i
  */
@@ -667,6 +726,18 @@ static const u32 TED_D = 109;
 struct ecpt {
 	guy x, y, t, z;
 };
+
+// Load (x,y) from endian-neutral data bytes (64)
+static void ted_load_xy(const u8 *a, ecpt &r) {
+	fe_load(a, r.x);
+	fe_load(a + 32, r.y);
+}
+
+// Save (x,y) to endian-neutral data bytes (64)
+static void ted_save_xy(const ecpt &a, u8 *r) {
+	fe_load(a.x, r);
+	fe_load(a.y, r + 32);
+}
 
 // TODO: Generate a random generator point and its homomorphism.
 
@@ -704,12 +775,21 @@ static const ecpt TED_GENPT = {
 	}
 };
 
+// r = -a
 static CAT_INLINE void ted_neg(const ecpt &a, ecpt &r) {
 	// -(X : Y : T : Z) = (-X : Y : -T : Z)
 
 	fe_neg(a.x, r.x);
 	fe_set(a.y, r.y);
 	fe_neg(a.t, r.t);
+	fe_set(a.z, r.z);
+}
+
+// r = a
+static CAT_INLINE void ted_set(const ecpt &a, ecpt &r) {
+	fe_set(a.x, r.x);
+	fe_set(a.y, r.y);
+	fe_set(a.t, r.t);
 	fe_set(a.z, r.z);
 }
 
@@ -744,7 +824,7 @@ static const guy ENDO_XEK = {
 };
 
 /*
- * Twisted Edwards Endomorphism
+ * Twisted Edwards Homomorphism [3]
  *
  * Input:
  *
@@ -759,7 +839,7 @@ static const guy ENDO_XEK = {
  */
 
 // r = ENDO_LAMBDA * p
-static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
+static CAT_INLINE void ted_morph(const ecpt &p, ecpt &r) {
 	// X2 <- X1'
 	guy t1;
 	fe_conj(p.x, t1);
@@ -769,6 +849,8 @@ static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
 
 	// Y2 <- Y1'
 	fe_conj(p.y, r.y);
+
+	// TODO: Generate T, Z
 
 	// TODO: Verify this works.
 }
@@ -780,6 +862,8 @@ static CAT_INLINE void ted_endo(const ecpt &p, ecpt &r) {
  *
  * T2 is computed optionally when calc_t = true.
  * T2 is necessary for following ted_dbl by ted_add.
+ *
+ * Precondition: &p != &r
  */
 
 // r = 2p
@@ -841,17 +925,94 @@ static CAT_INLINE void ted_dbl(const ecpt &p, ecpt &r, const bool z_one, const b
 	}
 }
 
+// b = a in ted_add() precomputed coordinates
+static CAT_INLINE void ted_set_precomp(const ecpt &a, ecpt &b) {
+	// b <- (X2 + Y2, Y2 - X2, 2 * T2, 2 * Z2)
+	ted_add(a.x, a.y, b.x);
+	ted_sub(a.y, a.x, b.y);
+	ted_add(a.t, a.t, b.t);
+	ted_add(a.z, a.z, b.z);
+}
+
+/*
+ * Extended Twisted Edwards Dedicated Point Addition [5]
+ *
+ * WARNING: This function will fail horribly when a = b
+ *
+ * Using precomputed point coordinates from [1]:
+ * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, 2 * T2, 2 * Z2)
+ *
+ * Precondition: calc_t was set to true on last operation for a and b
+ * Precondition: a != b
+ */
+
+// r = a + b
+static CAT_INLINE void ted_add_ded(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, const bool calc_t) {
+	// Uses: 7M 6A with z2_one=false calc_t=false
+	// z2_one=true: -1M + 1A
+	// calc_t=true: +1M
+
+	// C = w1 <- 2 * Z1 * T2 = t2 * z1
+	guy w1;
+	fe_mul(b.t, a.z, w1);
+
+	// If z2 = 1,
+	guy w2;
+	if (z2_one) {
+		// D <- 2 * T1 * Z2 = t1 + t1
+		fe_add(a.t, a.t, w2);
+	} else {
+		// D <- 2 * T1 * Z2
+		fe_mul(a.t, b.z, w2);
+	}
+
+	// E <- D + C
+	guy w3;
+	fe_add(w1, w2, w3);
+
+	// H <- D - C
+	guy w4;
+	fe_sub(w2, w1, w4);
+
+	// w2 <- Y1 + X1 = y1 + x1
+	fe_add(a.x, a.y, w2);
+
+	// A = w2 <- (Y1 - X1) * (Y2 + X2) = x2 * w2
+	fe_mul(b.x, w2, w2);
+
+	// w1 <- Y1 - X1 = y1 - x1
+	fe_sub(a.y, a.x, w1);
+
+	// B = w1 <- (Y1 + X1) * (Y2 - X2) = y2 * w1
+	fe_mul(b.y, w1, w1);
+
+	// F = r3 <- B - A = w1 - w2
+	fe_sub(w1, w2, r.z);
+
+	// G = w1 <- B + A = w1 + w2
+	fe_add(w1, w2, w1);
+
+	// X3 = x3 <- E * F = r3 * w3
+	fe_mul(r.z, w3, r.x);
+
+	// If t is wanted,
+	if (calc_t) {
+		// T3 = t3 <- E * H = r3 * w1
+		fe_mul(r.z, w1, r.t);
+	}
+
+	// Y3 = y3 <- G * H = w1 * w4
+	fe_mul(w1, w4, r.y);
+
+	// Z3 = z3 <- F * G = w3 * w4
+	fe_mul(w3, w4, r.z);
+}
+
 /*
  * Extended Twisted Edwards Unified Point Addition [5]
  *
- * The dedicated point formula is too dangerous, since with simultaneous
- * multiplication going on it is tricky to prevent the a = b fault case
- * where the dedicated point formula fails.  I was not able to find any
- * research on this fault attack to see if it causes real problems so I
- * am playing it safe here.
- *
  * Using precomputed point coordinates from [1]:
- * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, T2, 2 * Z2)
+ * (X3, Y3, T3, Z3) = (X1, Y1, T1, Z1) + (X2 + Y2, Y2 - X2, 2 * T2, 2 * Z2)
  *
  * Precondition: calc_t was set to true on last operation for a and b
  */
@@ -862,12 +1023,12 @@ static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, con
 	// z2_one=true: -1M + 1A
 	// calc_t=true: +1M
 
-	// w1 <- T1 * T2 = t1 * t2
+	// w1 <- T1 * 2 * T2 = t1 * t2
 	guy w1;
 	fe_mul(b.t, a.t, w1);
 
-	// C = w1 <- 2 * d * T1 * T2 = w1 * 2d
-	fe_mul_smallk(w1, 2 * TED_D, w1);
+	// C = w1 <- 2 * d * T1 * T2 = w1 * d
+	fe_mul_smallk(w1, TED_D, w1);
 
 	// If z2 = 1,
 	guy w2;
@@ -922,21 +1083,26 @@ static CAT_INLINE void ted_add(ecpt &a, ecpt &b, ecpt &r, const bool z2_one, con
 }
 
 // Compute affine coordinates for (X,Y)
-static CAT_INLINE void ted_affine(const ecpt &a, guy &x, guy &y) {
+static CAT_INLINE void ted_affine(const ecpt &a, ecpt &r) {
 	// B = 1 / in.Z
 	guy b;
 	fe_inv(a.z, b);
 
 	// out.X = B * in.X
-	fe_mul(a.x, b, x);
+	fe_mul(a.x, b, r.x);
 
 	// out.Y = B * in.Y
-	fe_mul(a.y, b, y);
+	fe_mul(a.y, b, r.y);
+
+	// Final reduction
+	fe_red1271(r.x);
+	fe_red1271(r.y);
 }
 
 // Solve for Y given the X point on a curve
 static CAT_INLINE void ted_solve_y(ecpt &r) {
 {
+	// TODO: Probably drop this from the codebase
 	// y = sqrt[(1 + x^2) / (1 - d*x^2)]
 
 	// B = x^2
@@ -947,11 +1113,11 @@ static CAT_INLINE void ted_solve_y(ecpt &r) {
 	guy c;
 	fe_mul_smallk(b, TED_D, c);
 	fe_neg(c, c);
-	fe_add1(c, c);
+	fe_add_smallk(1, c, c);
 	fe_inv(c, c);
 
 	// y = sqrt(C*(B+1))
-	fe_add1(b, b);
+	fe_add_smallk(1, b, b);
 	fe_mul(c, b, b);
 	fe_sqrt(b, r.y);
 }
@@ -1003,12 +1169,31 @@ static CAT_INLINE bool ecpt_valid(const &ecpt a) {
 	guy e;
 	fe_mul(b, c, e);
 	fe_mul_smallk(e, TED_D, e);
-	fe_add1(e);
+	fe_add_smallk(1, e);
 	fe_add(e, b, e);
 	fe_sub(e, c, e);
 
 	// If the result is zero, it is on the curve
 	return fe_iszero(e);
+}
+
+void Snowshoe::MaskScalar(u32 k[8]) {
+	// Group order of the curve = r = 4*q word-mapped:
+	// 0x3FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE9898505303721F4F3A6DA38EC2780694
+	//   (  07  )(  06  )(  05  )(  04  )(  03  )(  02  )(  01  )(  00  )
+
+	// Clear low 2 bits (due to cofactor = 4)
+	k[0] &= ~(u32)3;
+
+	// Clear high 2 bits (due to p = 127 bits)
+	// Clear next highest bit also to avoid going above group order
+	k[7] &= ~(u32)0xE0000000;
+
+	// Largest value after filtering:
+	// 0x1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC
+	//   (  07  )(  06  )(  05  )(  04  )(  03  )(  02  )(  01  )(  00  )
+
+	// NOTE: This should also work with most other group orders.
 }
 
 // R = kG
@@ -1022,14 +1207,181 @@ void Snowshoe::GenMul(const u32 k[8], ecpt &R) {
 	// Precompute endomorphism
 
 	ecpt P;
-	ted_dbl(TED_GENPT, P, true, false);
-	ted_dbl(P, P, false, true);
+	ted_set(TED_GENPT, P);
+
+	ecpt G;
+	ted_set_precomp(P, G);
+
+	// For each bit in k < r from left to right,
+	for (int ii = 253; ii >= 0; --ii) {
+		// temp <- [2]P
+		ecpt temp;
+		ted_dbl(P, temp, false, true);
+
+		// If bit is set,
+		if (k[ii / 32] & (1 << (ii % 32))) {
+			ted_add_ded(temp, G, P, true, false);
+		}
+	}
 
 	// TODO: Start by doing naive left-to-right double-add to verify that it works.
 	// Check the result using MAGMA.
 	// Then implement GLV-SAC from [1].
 	// Verify the result again against the reference version.
 	// Then implement the other two:
+}
+
+/*
+ * Reference implementation 1: [k]G using left-to-right unified add
+ */
+void RefGenMul1(const u32 k[8], ecpt &R) {
+	// P = generator point
+	ecpt P;
+	ted_set(TED_GENPT, P);
+
+	// G = generator point in precomputed coordinates for ted_add()
+	ecpt G;
+	ted_set_precomp(P, G);
+
+	bool seen_bit = false;
+
+	// For each bit in k < r from left to right,
+	for (int ii = 253; ii >= 0; --ii) {
+		ecpt temp;
+
+		// If seen any bits yet,
+		if (seen_bit) {
+			// temp <- [2]P
+			ted_dbl(P, temp, false, true);
+		}
+
+		// If bit is set,
+		if (k[ii / 32] & (1 << (ii % 32))) {
+			ted_add(temp, G, P, true, false);
+			seen_bit = true;
+		} else if (seen_bit) {
+			ted_set(temp, P);
+		}
+	}
+
+	// Compute affine coordinates in R
+	ted_affine(P, R);
+}
+
+/*
+ * Reference implementation 2: [k]G using left-to-right dedicated add
+ */
+void RefGenMul2(const u32 k[8], ecpt &R) {
+	// P = generator point
+	ecpt P;
+	ted_set(TED_GENPT, P);
+
+	// G = generator point in precomputed coordinates for ted_add()
+	ecpt G;
+	ted_set_precomp(P, G);
+
+	// For each bit in k < r from left to right,
+	for (int ii = 253; ii >= 0; --ii) {
+		ecpt temp;
+
+		// If seen any bits yet,
+		if (seen_bit) {
+			// temp <- [2]P
+			ted_dbl(P, temp, false, true);
+		}
+
+		// If bit is set,
+		if (k[ii / 32] & (1 << (ii % 32))) {
+			ted_add_ded(temp, G, P, true, false);
+			seen_bit = true;
+		} else if (seen_bit) {
+			ted_set(temp, P);
+		}
+	}
+
+	// Compute affine coordinates in R
+	ted_affine(P, R);
+}
+
+/*
+ * Reference 3: [k]G using homomorphism + left-to-right dedicated add
+ */
+void RefGenMul3(const u32 k[8], ecpt &R) {
+	// P = generator point in precomputed coordinates for ted_add()
+	ecpt P;
+	ted_set_precomp(TED_GENPT, P);
+
+	// Q = homormorphism of generator point in preomcputed coordinates
+	ecpt W, Q;
+	ted_morph(TED_GENPT, W);
+	ted_set_precomp(W, Q);
+
+	// W = generator point
+	ted_set(TED_GENPT, W);
+
+	// k = a + b*s, s = endomorphism scalar
+	u32 a[4], b[4];
+	ted_split(k, a, b);
+
+	// For each bit in k < r from left to right,
+	for (int ii = 126; ii >= 0; --ii) {
+		ecpt temp;
+
+		if (seen_bit) {
+			// temp <- [2]P
+			ted_dbl(W, temp, false, true); // Always generates T
+		}
+
+		// If bit is set,
+		if (a[ii / 32] & (1 << (ii % 32))) {
+			ted_add_ded(temp, P, W, true, true); // Generates T
+			seen_bit = true;
+		} else if (seen_bit) {
+			ted_set(temp, W);
+		}
+
+		// If bit is set,
+		if (b[ii / 32] & (1 << (ii % 32))) {
+			ted_add_ded(temp, Q, W, true, false);
+			seen_bit = true;
+		} else if (seen_bit) {
+			ted_set(temp, W);
+		}
+	}
+
+	// Compute affine coordinates in R
+	ted_affine(W, R);
+}
+
+void UnitTestGenMul() {
+	u32 k[8];
+	ecpt R1, R2, R3, R4;
+	u8 a1[64], a2[64], a3[64], a4[64];
+
+	for (int jj = 0; jj < 1000; ++jj) {
+		random(k);
+		MaskScalar(k);
+
+		RefGenMul1(k, R1);
+		RefGenMul2(k, R2);
+		RefGenMul3(k, R3);
+		GenMul(k, R4);
+
+		ted_save_xy(R1, a1);
+		ted_save_xy(R2, a2);
+		ted_save_xy(R3, a3);
+		ted_save_xy(R4, a4);
+
+		for (int ii = 0; ii < 64; ++ii) {
+			if (a1[ii] != a2[ii] ||
+				a2[ii] != a3[ii] ||
+				a3[ii] != a4[ii]) {
+				return false;
+			}
+		}
+	}
+
+	return true;
 }
 
 // R = kP

@@ -1,0 +1,44 @@
+p := 2^127-1;
+K<w> := GF(p^2);
+
+mu := 2 + w;
+aa := -mu;
+
+ds := 2579;
+
+for di := ds to (ds+128) by 1 do
+
+dd := di*mu;
+
+A2 := 2 * (aa + dd) / (aa - dd);
+A4 := 4 / (aa - dd);
+A := 1 / (A4 * A4) - A2 * A2 / (3 * A4 * A4);
+B := -A2 * A2 * A2 / (27 * A4 * A4 * A4) - A2 * A / (3 * A4);
+
+E := EllipticCurve([K | A, B]);
+time SEA(E : MaxSmooth := 1);
+
+EP := $1;
+
+if EP mod 8 eq 0 then
+   TEST := IsPrime(EP div 8);
+else
+   if EP mod 4 eq 0 then
+      TEST := IsPrime(EP div 4);
+   else
+      if EP mod 2 eq 0 then
+           TEST := IsPrime(EP div 2);
+      else
+           TEST := IsPrime(EP);
+      end if;
+   end if;
+end if;
+
+print di;
+if TEST eq true then
+    print "TWISTED EDWARDS CURVE IS GOOD";
+Factorization(EP):Hex;
+end if;
+
+end for;
+

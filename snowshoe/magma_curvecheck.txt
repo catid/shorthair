@@ -1,0 +1,64 @@
+p := 2^127-1;
+K<w> := GF(p^2);
+
+mu := 2 + w;
+aa := -mu;
+dd := 109*mu;
+
+A2 := 2 * (aa + dd) / (aa - dd);
+A4 := 4 / (aa - dd);
+A := 1 / (A4 * A4) - A2 * A2 / (3 * A4 * A4);
+B := -A2 * A2 * A2 / (27 * A4 * A4 * A4) - A2 * A / (3 * A4);
+
+E := EllipticCurve([K | A, B]);
+ETwists := Twists(E);
+print ETwists;
+time [ SEA(F : MaxSmooth := 1) : F in ETwists ];
+
+EP := $1[1];
+TP := $1[2];
+
+if EP mod 8 eq 0 then
+   TEST := IsPrime(EP div 8);
+else
+   if EP mod 4 eq 0 then
+      TEST := IsPrime(EP div 4);
+   else
+      if EP mod 2 eq 0 then
+           TEST := IsPrime(EP div 2);
+      else
+           TEST := IsPrime(EP);
+      end if;
+   end if;
+end if;
+
+if TEST eq true then
+   print "TWISTED EDWARDS CURVE IS GOOD";
+else
+   print "TWISTED EDWARDS CURVE SUCKS";
+end if;
+
+Factorization(EP):Hex;
+
+if TP mod 8 eq 0 then
+   TTEST := IsPrime(TP div 8);
+else
+   if TP mod 4 eq 0 then
+      TTEST := IsPrime(TP div 4);
+   else
+      if TP mod 2 eq 0 then
+           TTEST := IsPrime(TP div 2);
+      else
+           TTEST := IsPrime(TP);
+      end if;
+   end if;
+end if;
+
+if TTEST eq true then
+   print "QUADRATIC TWIST IS GOOD";
+else
+   print "QUADRATIC TWIST SUCKS";
+end if;
+
+Factorization(TP):Hex;
+
