@@ -55,3 +55,9 @@ time a new message is rebroadcast.
 I decided to split the transport layer into shorthair + ARQ/CC since for a
 lot of applications like audio streaming, ARQ and CC are not even desired.
 
+
+#### Credits
+
+This software was written entirely by myself ( Christopher A. Taylor <mrcatid@gmail.com> ).  If you
+find it useful and would like to buy me a coffee, consider [tipping](https://www.gittip.com/catid/).
+
