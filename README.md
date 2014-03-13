@@ -1,6 +1,6 @@
-# Shorthair Low-Latency Networking in C++
+# Shorthair Low-Latency Networking
 
-Shorthair library uses the [Longhair library](https://github.com/catid/longhair) to provide low-latency loss-recovery, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
+Shorthair is a portable C++ library uses the [Longhair library](https://github.com/catid/longhair) to provide low-latency loss-recovery, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
 
 Erasure codes in software are fast with low-overhead.
 
@@ -14,6 +14,14 @@ Improves the experience for multiplayer mobile apps.
 
 Please take a look at my presentation on Erasure codes for more motivation:
 [Erasure Codes in Software](https://github.com/catid/shorthair/blob/master/docs/ErasureCodesInSoftware.pdf)
+
+
+##### Building: Quick Setup
+
+The [shorthair-mobile](https://github.com/catid/shorthair/tree/master/shorthair-mobile)
+directory contains an easy-to-import set of C code that also
+builds properly for mobile devices and Windows-based computers.
+
 
 #### Features:
 
