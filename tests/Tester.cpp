@@ -122,13 +122,12 @@ void ZeroLossServer::Tick() {
 
 		*(u32*)buffer = _next++;
 
-		int len = _prng->GenerateUnbiased(4 + 4, 32);
+		int len = _prng->GenerateUnbiased(4 + 4, MAX_SIZE);
 
 		*(u32*)(buffer + 4) = len;
 
 		for (int jj = 8; jj < len; ++jj) {
-			buffer[jj] = jj;
-			//buffer[jj] = (u8)prng.Generate();
+			buffer[jj] = (u8)prng.Generate();
 		}
 
 		++_sent;
@@ -155,7 +154,7 @@ void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 	prng.Initialize(id);
 
 	for (int jj = 8; jj < len; ++jj) {
-		//CAT_ENFORCE(packet[jj] == (u8)prng.Generate());
+		CAT_ENFORCE(packet[jj] == (u8)prng.Generate());
 	}
 
 	++_received;
