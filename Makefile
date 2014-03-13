@@ -22,7 +22,7 @@ libcat_o = EndianNeutral.o Clock.o BitMath.o Enforcer.o \
 		   ReuseAllocator.o MemXOR.o MemSwap.o
 longhair_o = cauchy_256.o
 shorthair_o = Shorthair.o $(longhair_o)
-tester_o = Tester.o $(shorthair_o) $(libcat_o) MersenneTwister.o
+tester_o = Tester.o $(shorthair_o) $(libcat_o) MersenneTwister.o SecureEqual.o
 redundancy_o = Redundancy.o $(libcat_o)
 
 
@@ -93,6 +93,9 @@ EndianNeutral.o : libcat/EndianNeutral.cpp
 
 ReuseAllocator.o : libcat/ReuseAllocator.cpp
 	$(CCPP) $(CPFLAGS) -c libcat/ReuseAllocator.cpp
+
+SecureEqual.o : libcat/SecureEqual.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/SecureEqual.cpp
 
 
 # Longhair objects

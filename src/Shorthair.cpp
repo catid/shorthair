@@ -40,7 +40,9 @@ using namespace std;
 #ifdef CAT_DEBUG
 
 #define CAT_DUMP_SHORTHAIR /* verbose output */
-#define CRS_VALIDATE /* validate that CRS codec is working */
+//#define CRS_VALIDATE /* validate that CRS codec is working, breaks stuff */
+
+#include <SecureEqual.hpp>
 
 #endif
 
@@ -1160,11 +1162,11 @@ void Encoder::EncodeQueued(int m) {
 
 		// Massage data for use in codec
 		for (Packet *p = _head; index < k && p; p = (Packet*)p->batch_next, ++index) {
-			u8 *buffer = p->data;
+			u8 *buffer = p->data + ORIGINAL_OVERHEAD - 2;
 			u16 len = p->len;
 
 			// Setup data pointer
-			data_ptrs[index] = buffer + ORIGINAL_OVERHEAD - 2;
+			data_ptrs[index] = buffer;
 
 			// Prefix data by its length
 			*(u16*)buffer = getLE16(len);
@@ -1181,7 +1183,7 @@ void Encoder::EncodeQueued(int m) {
 
 #ifdef CRS_VALIDATE
 		{
-			cout << "k = " << k << " m = " << m << endl;
+			//cout << "k = " << k << " m = " << m << " blockSize = " << block_size << endl;
 
 			Block blocks[256];
 
@@ -1204,15 +1206,31 @@ void Encoder::EncodeQueued(int m) {
 				blocks[rem].data = _buffer.get() + ii * block_size;
 				blocks[rem].row = k + ii;
 			}
-
-			CAT_ENFORCE(0 == cauchy_256_decode(k, m, blocks, block_size));
-
+/*
+			cout << "Before decode:" << endl;
 			for (int ii = 0; ii < k; ++ii) {
 				cout << (int)blocks[ii].row << endl;
 			}
-
 			for (int ii = 0; ii < k; ++ii) {
-				CAT_ENFORCE(!memcmp(blocks[ii].data, data_ptrs[blocks[ii].row], block_size));
+				for (int jj = 0; jj < block_size; ++jj) {
+					cout << ii << ", " << jj << " = " << (int)blocks[ii].data[jj] << endl;
+				}
+			}
+*/
+			CAT_ENFORCE(0 == cauchy_256_decode(k, m, blocks, block_size));
+/*
+			cout << "After decode:" << endl;
+			for (int ii = 0; ii < k; ++ii) {
+				cout << (int)blocks[ii].row << endl;
+			}
+			for (int ii = 0; ii < k; ++ii) {
+				for (int jj = 0; jj < block_size; ++jj) {
+					cout << ii << ", " << jj << " = " << (int)blocks[ii].data[jj] << endl;
+				}
+			}
+*/
+			for (int ii = 0; ii < k; ++ii) {
+				CAT_ENFORCE(SecureEqual(blocks[ii].data, data_ptrs[blocks[ii].row], block_size));
 			}
 		}
 #endif
@@ -1391,7 +1409,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 	Block blocks[256];
 
 	// Add original packets
-	for (Packet *op = group->head; op; op = (Packet*)op->batch_next, ++index) {
+	for (Packet *op = group->head; op; op = (Packet*)op->batch_next) {
 		// We need to pad it out to the block size with zeroes.
 		// Get length of original packet
 		u16 op_len = getLE(*(u16*)op->data);
@@ -1402,18 +1420,19 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 		// Fill in block for codec
 		blocks[index].data = op->data;
 		blocks[index].row = (u8)op->id;
-		cout << index << " original = " << (int)blocks[index].row << endl;
-		cout << (int)*(u16*)op->data << endl;
+
+		++index;
 	}
 
 	CAT_DEBUG_ENFORCE(index == group->original_seen);
 
 	// Add recovery packets up to k
-	for (Packet *rp = group->recovery_head; index < k && rp; rp = (Packet*)rp->batch_next, ++index) {
+	for (Packet *rp = group->recovery_head; index < k && rp; rp = (Packet*)rp->batch_next) {
 		// Fill in block for codec
 		blocks[index].data = rp->data;
 		blocks[index].row = (u8)rp->id;
-		cout << index << " redundant = " << (int)blocks[index].row << endl;
+
+		++index;
 	}
 
 	const int m = group->recovery_count;
@@ -1428,8 +1447,6 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 
 	// For each recovery packet,
 	for (int ii = group->original_seen; ii < k; ++ii) {
-		cout << "row " << (int)blocks[ii].row << endl;
-
 		// The data was decoded in-place
 		u8 *src = blocks[ii].data;
 		int len = getLE(*(u16*)src);
@@ -1501,12 +1518,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			group->largest_id = id;
 		}
 
-		// Skip over extra byte for m (see optimization below)
-		data++;
-		data_len--;
-
 		// Pull in codec parameters
-		group->largest_len = data_len;
+		group->largest_len = data_len - 1;
 		group->recovery_count = (u32)pkt[3] + 1;
 	}
 
@@ -1527,12 +1540,9 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
 
-			// It must be that this is a faked recovery packet, so we need
-			// to undo the "skip" above (see above)
-
 			// NOTE: In this special case all recovery packets are the same
 			// as the original packet: 00 00 data...
-			_settings.interface->OnPacket(data - 1, data_len + 1);
+			_settings.interface->OnPacket(data, data_len);
 
 			closeGroup(group, code_group);
 			return;
@@ -1559,7 +1569,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->AddOriginal(p);
 	} else {
 		// Store recovery packet, which has length included (encoded)
-		memcpy(p->data, data, data_len);
+		memcpy(p->data, data + 1, data_len - 1);
 
 		// Insert it into the recovery packet list
 		group->AddRecovery(p);
