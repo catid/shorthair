@@ -1131,7 +1131,7 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 	// Optimization: If k = 1,
 	if (_k == 1) {
 		// Write special form
-		buffer[0] = 0;
+		buffer[0] = 1;
 		buffer[1] = 0;
 		memcpy(buffer + 2, _buffer.get(), block_bytes);
 
@@ -1391,21 +1391,14 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Pull in codec parameters
 		group->largest_len = data_len - 1;
 		group->recovery_count = (u32)pkt[3] + 1;
-	}
 
-	// If we know how many blocks to expect,
-	if (group->largest_id >= block_count) {
-		// If we have received all original data without loss, (common case)
 		if (group->original_seen >= block_count) {
 			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 
 			// See above: Original data gets processed immediately
 			closeGroup(group, code_group);
 			return;
-		}
-
-		// Optimization: If block count is special case 1,
-		if (block_count == 1) {
+		} else if (block_count == 1) {
 			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
 
 			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
