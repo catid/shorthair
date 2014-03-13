@@ -116,7 +116,7 @@ void ZeroLossServer::Tick() {
 	u8 buffer[MAX_SIZE] = {0};
 
 	// >10 "MBPS" if packet payload is 1350 bytes
-	for (int ii = 0; ii < 4; ++ii) {
+	for (int ii = 0; ii < 1; ++ii) {
 		MersenneTwister prng;
 		prng.Initialize(_next);
 

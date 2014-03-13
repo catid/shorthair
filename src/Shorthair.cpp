@@ -1382,16 +1382,6 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Increment original seen count
 		group->original_seen++;
 	} else {
-		// If ID is the largest seen so far,
-		if (id > group->largest_id) {
-			// Update largest seen ID for decoding ID in next packet
-			group->largest_id = id;
-		}
-
-		// Pull in codec parameters
-		group->largest_len = data_len - 1;
-		group->recovery_count = (u32)pkt[3] + 1;
-
 		if (group->original_seen >= block_count) {
 			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 
@@ -1410,6 +1400,16 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			closeGroup(group, code_group);
 			return;
 		}
+
+		// If ID is the largest seen so far,
+		if (id > group->largest_id) {
+			// Update largest seen ID for decoding ID in next packet
+			group->largest_id = id;
+		}
+
+		// Pull in codec parameters
+		group->largest_len = data_len - 1;
+		group->recovery_count = (u32)pkt[3] + 1;
 	}
 
 	// Packet that will contain this data
