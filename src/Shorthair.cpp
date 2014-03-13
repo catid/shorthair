@@ -1263,7 +1263,7 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[1] << endl);
 
 		// Pass unrecognized OOB data to the interface
-		_settings.interface->OnOOB(pkt, len);
+		_settings.interface->OnOOB(pkt + 1, len - 1);
 	}
 }
 
