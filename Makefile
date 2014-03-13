@@ -148,40 +148,11 @@ SecureErase.o : libcat/SecureErase.cpp
 	$(CCPP) $(CPFLAGS) -c libcat/SecureErase.cpp
 
 
-# Wirehair objects
-
-Wirehair.o : wirehair/Wirehair.cpp
-	$(CCPP) $(CPFLAGS) -c wirehair/Wirehair.cpp
-
-
-# Calico objects
-
-AntiReplayWindow.o : calico/AntiReplayWindow.cpp
-	$(CCPP) $(CPFLAGS) -c calico/AntiReplayWindow.cpp
-
-Calico.o : calico/Calico.cpp
-	$(CCPP) $(CPFLAGS) -c calico/Calico.cpp
-
-ChaChaVMAC.o : calico/ChaChaVMAC.cpp
-	$(CCPP) $(CPFLAGS) -c calico/ChaChaVMAC.cpp
-
-Skein.o : calico/Skein.cpp
-	$(CCPP) $(CPFLAGS) -c calico/Skein.cpp
-
-Skein256.o : calico/Skein256.cpp
-	$(CCPP) $(CPFLAGS) -c calico/Skein256.cpp
-
-VHash.o : calico/VHash.cpp
-	$(CCPP) $(CPFLAGS) -c calico/VHash.cpp
-
 
 # Shorthair objects
 
 Shorthair.o : shorthair/Shorthair.cpp
 	$(CCPP) $(CPFLAGS) -c shorthair/Shorthair.cpp
-
-ShorthairAPI.o : shorthair/ShorthairAPI.cpp
-	$(CCPP) $(CPFLAGS) -c shorthair/ShorthairAPI.cpp
 
 
 # Server objects

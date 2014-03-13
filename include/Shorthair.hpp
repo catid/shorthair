@@ -83,11 +83,6 @@ public:
 
 
 struct Settings {
-	// Did currrent instance initiate the data flow?
-	// Each side of the channel needs to pick an opposite role to ensure that
-	// the encryption works properly.
-	bool initiator;				// true = Client mode, false = Server mode
-
 	// Good default: 0.0001
 	double target_loss;			// Target packet loss rate
 
@@ -121,13 +116,10 @@ class Shorthair : protected GroupFlags {
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator _allocator;
 
-	// Encryption
-	calico::Calico _cipher;
+	// Next outgoing sequence number
+	u16 _out_seq;
 
 private:
-	//// Encoder
-	EncoderThread _encoder;
-
 	// Statistics
 	DelayEstimator _delay;
 	LossEstimator _loss;
@@ -160,12 +152,9 @@ protected:
 	void UpdateLoss(u32 seen, u32 count);
 
 	// On receiving an out-of-band packet
-	void OnOOB(u8 *pkt, int len);
+	void OnOOB(u8 code_group, u8 *pkt, int len);
 
 private:
-	//// Decoder
-	wirehair::Codec _decoder;
-
 	LossStatistics _stats;
 
 	// Is decoder active?
@@ -182,7 +171,7 @@ protected:
 	void RecoverGroup(CodeGroup *group);
 
 	// On receiving a data packet
-	void OnData(u8 *pkt, int len);
+	void OnData(u8 code_group, u8 *pkt, int len);
 
 	// Send collected statistics
 	void SendPong(int code_group);
@@ -208,7 +197,7 @@ public:
 	}
 
 	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const Settings &settings);
+	bool Initialize(const Settings &settings);
 
 	// Cleanup
 	void Finalize();

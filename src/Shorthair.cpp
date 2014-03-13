@@ -262,22 +262,20 @@ using namespace std;
  *
  * Source -> Sink data packet format:
  *
- * <OOB[1 bit = 0] | group[7 bits]> (brook-wirehair) : Out of band flag = 0
- * <block count[2 bytes]> (brook-wirehair)
- * <block id[2 bytes]> (brook-wirehair)
- * <block size[2 bytes]> (brook: Only for recovery packets)
+ * <SeqNo[2 bytes]>
+ * <OOB[1 bit = 0] | group[7 bits]> : Out of band flag = 0
+ * <block count[1 byte]>
+ * <block id[1 bytes]>
+ * Recovery only: <block size[2 bytes]>
  * {...block data...}
- * <MAC[8 bytes]> (calico)
- * <IV[3 bytes]> (calico)
  *
- * MAC+IV are used for Calico encryption (11 bytes overhead).
  * Group: Which code group the data is associated with.
  * N = Block count: Total number of original data packets in this code group.
  * I = Block id: Identifier for this packet.
  *
  * In this scheme,
  * 		I < N are original, and
- * 		I >= N are Wirehair recovery packets.
+ * 		I >= N are recovery packets.
  *
  * The Block ID uses a wrapping counter that reduces an incrementing 32-bit
  * counter to a 16-bit counter assuming that packet re-ordering does not exceed
@@ -909,207 +907,6 @@ void DelayEstimator::Calculate() {
 }
 
 
-//// EncoderThread
-
-bool EncoderThread::Entrypoint(void *param) {
-	while (!_kill) {
-		_wake_lock.Enter();
-		if (!_kill) {
-			Process();
-		}
-	}
-
-	return true;
-}
-
-void EncoderThread::Process() {
-	_processing_lock.Enter();
-
-	// Byte per data chunk
-	int chunk_size = _group_largest;
-	int block_count = _group_count;
-
-	CAT_ENFORCE(block_count > 1 && chunk_size > 0);
-
-	// NOTE: Blocks are chunks with 2-byte lengths prepended
-	int block_size = 2 + chunk_size;
-	_group_block_size = block_size;
-
-	// Calculate size of encoded messages
-	u32 message_size = block_count * block_size;
-
-	// Grow buffer
-	_encode_buffer.resize(message_size);
-
-	// For each sent packet,
-	u8 *buffer = _encode_buffer.get();
-	for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
-		u16 len = p->len;
-
-		CAT_ENFORCE(len <= chunk_size);
-
-		// Start each block off with the 16-bit size
-		*(u16*)buffer = getLE(len);
-		buffer += 2;
-
-		// Add packet data in
-		memcpy(buffer, p->data + PROTOCOL_OVERHEAD, len);
-
-		// Zero the high bytes
-		CAT_CLR(buffer + len, chunk_size - len);
-
-		// On to the next
-		buffer += chunk_size;
-	}
-
-	// NOTE: After this function call, the input data can be safely modified so long
-	// as Encode() requests come after the original data block count.
-	CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
-
-	_next_block_id = block_count;
-
-	// Avoid re-ordering writes by optimizer at compile time
-	CAT_FENCE_COMPILER;
-
-	_encoder_ready = true;
-
-	_processing_lock.Leave();
-}
-
-void EncoderThread::Initialize(ReuseAllocator *allocator) {
-	Finalize();
-
-	_allocator = allocator;
-
-	_kill = false;
-	_last_garbage = false;
-	_encoder_ready = false;
-	_next_block_id = 0;
-	_largest = 0;
-	_block_count = 0;
-	_sent_head = _sent_tail = 0;
-
-	_wake_lock.Enter();
-
-	StartThread();
-
-	_initialized = true;
-}
-
-void EncoderThread::Finalize() {
-	if (_initialized) {
-		_kill = true;
-
-		_wake_lock.Leave();
-
-		WaitForThread();
-
-		FreeGarbage();
-
-		_initialized = false;
-	}
-}
-
-Packet *EncoderThread::Queue(int len) {
-	CAT_ENFORCE(len > 0);
-
-	// Allocate sent packet buffer
-	Packet *p = _allocator->AcquireObject<Packet>();
-	p->batch_next = 0;
-	p->len = len;
-
-	// If this new packet is larger than the previous ones,
-	if (_largest < len) {
-		// Remember the largest size for when we start emitting check symbols
-		_largest = len;
-	}
-
-	// Insert at end of list
-	if (_sent_tail) {
-		_sent_tail->batch_next = p;
-	} else {
-		_sent_head = p;
-	}
-	_sent_tail = p;
-
-	++_block_count;
-
-	CAT_ENFORCE(_block_count <= CAT_WIREHAIR_MAX_N);
-
-	return p;
-}
-
-void EncoderThread::EncodeQueued() {
-	if (_block_count <= 0) {
-		return;
-	}
-
-	_processing_lock.Enter();
-
-	// NOTE: After N = 1 case, next time encoding starts it will free the last one
-	FreeGarbage();
-
-	// Move code group profile into private memory
-	_group_largest = _largest;
-	_group_count = _block_count;
-	_group_head = _sent_head;
-	_group_tail = _sent_tail;
-
-	// Flag garbage for takeout
-	_last_garbage = true;
-
-	// Clear the shared workspace for new data
-	_largest = 0;
-	_block_count = 0;
-	_sent_head = _sent_tail = 0;
-
-	// If N = 1,
-	if (_group_count <= 1) {
-		// Set up for special mode
-		_encoder_ready = true;
-		_group_block_size = _group_largest;
-
-		_processing_lock.Leave();	
-	} else {
-		// Flag encoder as being busy processing previous data
-		_encoder_ready = false;
-
-		_processing_lock.Leave();	
-
-		// Wake up the processing thread
-		_wake_lock.Leave();
-	}
-}
-
-// Returns 0 if recovery blocks cannot be sent yet
-int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
-	if (!_encoder_ready) {
-		return 0;
-	}
-
-	// Get next block ID to send
-	u32 block_id = _next_block_id++;
-
-	// Add low bits of check symbol number
-	*(u16*)buffer = getLE((u16)block_id);
-
-	// Add block count
-	*(u16*)(buffer + 2) = getLE((u16)_group_count);
-
-	// If single packet,
-	if (_group_count == 1) {
-		// Copy original data directly
-		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
-	} else {
-		CAT_ENFORCE(_group_block_size == (int)_encoder.Encode(block_id, buffer + 4));
-
-		FreeGarbage();
-	}
-
-	return 4 + _group_block_size;
-}
-
-
 //// CodeGroup
 
 void CodeGroup::Open(u32 ms) {
@@ -1258,27 +1055,122 @@ void GroupFlags::ClearOpposite(const u8 group) {
 }
 
 
+//// Encoder
+
+void Encoder::Initialize(ReuseAllocator *allocator) {
+	Finalize();
+
+	_allocator = allocator;
+	_head = 0;
+	_tail = 0;
+	_original_count = 0;
+	_recovery_count = 0;
+	_largest = 0;
+	_next_block_id = 0;
+	_initialized = true;
+}
+
+void Encoder::Finalize() {
+	if (_initialized) {
+		FreeGarbage();
+	}
+}
+
+Packet *EncoderThread::Queue(int len) {
+	CAT_ENFORCE(len > 0);
+
+	// Allocate sent packet buffer
+	Packet *p = _allocator->AcquireObject<Packet>();
+	p->batch_next = 0;
+	p->len = len;
+
+	// If this new packet is larger than the previous ones,
+	if (_largest < len) {
+		// Remember the largest size for when we start emitting check symbols
+		_largest = len;
+	}
+
+	// Insert at end of list
+	if (_sent_tail) {
+		_sent_tail->batch_next = p;
+	} else {
+		_sent_head = p;
+	}
+	_sent_tail = p;
+
+	++_block_count;
+	// NOTE: Not all block sizes are supported and some data may be dropped
+
+	return p;
+}
+
+void EncoderThread::EncodeQueued(int recovery_count) {
+	if (_block_count <= 0) {
+		return;
+	}
+
+	CAT_ENFORCE(recovery_count < 256);
+
+	_recovery_count = recovery_count;
+
+	// Truncate block count if needed
+	if (_block_count + _recovery_count > 256) {
+		_block_count = 256 - _recovery_count;
+	}
+
+	// TODO
+}
+
+// Returns 0 if recovery blocks cannot be sent yet
+int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
+	if (!_encoder_ready) {
+		return 0;
+	}
+
+	// Get next block ID to send
+	u32 block_id = _next_block_id++;
+
+	// Add low bits of check symbol number
+	*(u16*)buffer = getLE((u16)block_id);
+
+	// Add block count
+	*(u16*)(buffer + 2) = getLE((u16)_group_count);
+
+	// If single packet,
+	if (_group_count == 1) {
+		// Copy original data directly
+		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
+	} else {
+		CAT_ENFORCE(_group_block_size == (int)_encoder.Encode(block_id, buffer + 4));
+
+		FreeGarbage();
+	}
+
+	return 4 + _group_block_size;
+}
+
+
 //// Shorthair : Encoder
 
 // Send a check symbol
 bool Shorthair::SendCheckSymbol() {
 	u8 *buffer = _packet_buffer.get();
-	int bytes = _encoder.GenerateRecoveryBlock(buffer + 1);
+	int len = _encoder.GenerateRecoveryBlock(buffer + 3);
 
 	// If no data to send,
-	if (bytes <= 0) {
+	if (len <= 0) {
 		// Abort
 		return false;
 	}
 
-	// Prepend the code group
-	buffer[0] = _code_group & 0x7f;
+	// Insert next sequence number
+	*(u16*)buffer = getLE16(_out_seq++);
 
-	// Encrypt
-	bytes = _cipher.Encrypt(buffer, 1 + bytes, buffer, _packet_buffer.size());
+	// Prepend the code group
+	buffer[2] = _code_group & 0x7f;
 
 	// Transmit
-	_settings.interface->SendData(buffer, bytes);
+	_settings.interface->SendData(buffer, len + 3);
 
 	return true;
 }
@@ -1335,7 +1227,13 @@ void Shorthair::UpdateLoss(u32 seen, u32 count) {
 }
 
 void Shorthair::OnOOB(u8 *pkt, int len) {
-	switch (pkt[1]) {
+	// If truncated,
+	if (len < 1) {
+		// Ignore empty OOB packets
+		return;
+	}
+
+	switch (pkt[0]) {
 		case PONG_TYPE:
 			if (len == PONG_SIZE) {
 				u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
@@ -1355,7 +1253,7 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 			break;
 		default:
 			// Pass unrecognized OOB data to the interface
-			_settings.interface->OnOOB(pkt + 1, len - 1);
+			_settings.interface->OnOOB(pkt, len);
 	}
 }
 
@@ -1605,21 +1503,21 @@ void Shorthair::OnData(u8 *pkt, int len) {
 void Shorthair::SendPong(int code_group) {
 	_stats.Calculate();
 
-	u8 pkt[PONG_SIZE + calico::Calico::OVERHEAD];
+	u8 pkt[3 + PONG_SIZE];
 
-	// Write packet
-	pkt[0] = (u8)code_group | 0x80;
-	pkt[1] = PONG_TYPE;
-	*(u32*)(pkt + 2) = getLE(_stats.GetSeen());
-	*(u32*)(pkt + 2 + 4) = getLE(_stats.GetTotal());
+	// Add sequence number to front
+	*(u16*)pkt = getLE16(_out_seq++);
 
-	// Encrypt pong
-	int len = _cipher.Encrypt(pkt, PONG_SIZE, pkt, sizeof(pkt));
+	// Mark as OOB
+	pkt[2] = (u8)code_group | 0x80;
 
-	CAT_DEBUG_ENFORCE(len == sizeof(pkt));
+	// Write pong data
+	pkt[3] = PONG_TYPE;
+	*(u32*)(pkt + 4) = getLE(_stats.GetSeen());
+	*(u32*)(pkt + 6) = getLE(_stats.GetTotal());
 
 	// Send it
-	_settings.interface->SendData(pkt, len);
+	_settings.interface->SendData(pkt, sizeof(pkt));
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
@@ -1631,16 +1529,14 @@ void Shorthair::OnGroupTimeout(const u8 group) {
 //// Shorthair: Interface
 
 // On startup:
-bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
+bool Shorthair::Initialize(const Settings &settings) {
 	Finalize();
+
+	cauchy_256_init();
 
 	_clock.OnInitialize();
 
 	_settings = settings;
-
-	if (_cipher.Initialize(key, "SHORTHAIR", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
-		return false;
-	}
 
 	CAT_ENFORCE(_settings.max_data_size <= MAX_CHUNK_SIZE);
 
@@ -1693,7 +1589,7 @@ void Shorthair::Finalize() {
 	}
 }
 
-// Send a new packet
+// Send original data
 void Shorthair::Send(const void *data, int len) {
 	CAT_ENFORCE(len <= _settings.max_data_size);
 
@@ -1703,8 +1599,11 @@ void Shorthair::Send(const void *data, int len) {
 
 	const u8 packet_group = _code_group + 1;
 
+	// Insert sequence number at the front (just to construct the packet)
+	*(u16*)buffer = getLE16(_out_seq++);
+
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[0] = packet_group & 0x7f;
+	buffer[2] = packet_group & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
 
@@ -1715,22 +1614,19 @@ void Shorthair::Send(const void *data, int len) {
 	}
 
 	// Add check symbol number
-	*(u16*)(buffer + 1) = getLE16(block_count - 1);
+	*(u16*)(buffer + 3) = getLE16(block_count - 1);
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
 	// NOTE: This allows the decoder to know when it has received
 	// all the packets in a code group for the zero-loss case.
-	*(u16*)(buffer + 1 + 2) = getLE(block_count);
+	*(u16*)(buffer + 5) = getLE(block_count);
 
 	// Copy input data into place
-	memcpy(buffer + PROTOCOL_OVERHEAD, data, len);
-
-	// Encrypt
-	int bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + len, _packet_buffer.get(), _packet_buffer.size());
+	memcpy(buffer + ORIGINAL_OVERHEAD, data, len);
 
 	// Transmit
-	_settings.interface->SendData(_packet_buffer.get(), bytes);
+	_settings.interface->SendData(buffer, len + 7);
 }
 
 // Send an OOB packet, first byte is type code
@@ -1741,17 +1637,17 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 
 	u8 *buffer = _packet_buffer.get();
 
+	// Insert sequence number at the front (just to construct the packet)
+	*(u16*)buffer = getLE16(_out_seq++);
+
 	// Mark OOB
-	buffer[0] = 0x80;
+	buffer[2] = 0x80;
 
 	// Copy input data into place
-	memcpy(buffer + 1, data, len);
-
-	// Encrypt
-	int bytes = _cipher.Encrypt(buffer, 1 + len, buffer, _packet_buffer.size());
+	memcpy(buffer + 3, data, len);
 
 	// Transmit
-	_settings.interface->SendData(buffer, bytes);
+	_settings.interface->SendData(buffer, len + 3);
 }
 
 // Called once per tick, about 10-20 ms
@@ -1811,21 +1707,21 @@ void Shorthair::Tick() {
 
 // On packet received
 void Shorthair::Recv(void *pkt, int len) {
-	u8 *buffer = static_cast<u8*>( pkt );
+	// If the header is not truncated,
+	if (len >= 3) {
+		// Read 16-bit sequence number from the front
+		u16 seq = getLE16(*(u16*)pkt);
 
-	u64 iv;
-	len = _cipher.Decrypt(buffer, len, iv);
-
-	// If a message was decoded,
-	if (len >= 2) {
 		// Update stats
-		_stats.Update((u32)iv);
+		_stats.Update(seq);
+
+		u8 *buffer = static_cast<u8*>( pkt );
 
 		// If out of band,
-		if (buffer[0] & 0x80) {
-			OnOOB(buffer, len);
+		if (buffer[2] & 0x80) {
+			OnOOB(buffer[2] & 0x7f, buffer + 3, len - 3);
 		} else {
-			OnData(buffer, len);
+			OnData(buffer[2], buffer + 3, len - 3);
 		}
 	}
 }

@@ -30,8 +30,7 @@
 #define CAT_SHORTHAIR_DETAILS_HPP
 
 // Support projects
-#include "../wirehair/Wirehair.hpp"
-#include "../calico/Calico.hpp"
+#include "cauchy_256.h"
 
 // Support tools
 #include "Clock.hpp"
@@ -41,27 +40,22 @@
 #include "ReuseAllocator.hpp"
 #include "SmartArray.hpp"
 
-// Multi-threading
-#include "Thread.hpp"
-#include "Mutex.hpp"
-
 namespace cat {
 
 namespace shorthair {
 
 
 // Protocol constants
-static const int SKEY_BYTES = 32;
-static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
-static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
-static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
-static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
+static const int PROTOCOL_OVERHEAD = 1 + 1 + 1;
+static const int ORIGINAL_OVERHEAD = 2 + PROTOCOL_OVERHEAD; // 2 more for SeqNo
+static const int RECOVERY_OVERHEAD = 2 + PROTOCOL_OVERHEAD + 2; // and 2 more for size
+static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 7 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
 // OOB Pong packet type
 static const u8 PONG_TYPE = 0xff;
-static const int PONG_SIZE = 1 + 1 + 4 + 4;
+static const int PONG_SIZE = 1 + 4 + 4; // Does not include seqno and OOB byte: total = 12 bytes
 
 
 //// LossEstimator
@@ -136,91 +130,6 @@ struct Packet : BatchHead {
 
 	// Data follows
 	u8 data[1];
-};
-
-
-//// EncoderThread
-
-/*
- * Run the encoder in a separate thread to avoid adding latency spikes
- * to the original data packet stream.
- *
- * Not thread-safe.  It assumes that only one thread is accessing its
- * interface at a time.
- */
-class EncoderThread : public Thread {
-protected: // Shared data:
-	bool _initialized;
-	volatile bool _kill;
-
-	// Packet buffers are allocated with room for the protocol overhead + data
-	ReuseAllocator *_allocator;
-
-	// Workspace to accumulate sent packets
-	Packet *_sent_head, *_sent_tail;
-	int _block_count;	// Number of blocks 
-	int _largest;		// Number of bytes max, excluding 2 byte implied length field
-
-	// Next block id to produce
-	u32 _next_block_id;
-
-	// Encoder is ready to produce symbols?
-	// Cleared by main thread, set by encoder thread
-	volatile bool _encoder_ready;
-
-	// Locks to hold during processing to avoid reentrancy
-	Mutex _wake_lock, _processing_lock;
-
-	// Indicates previous group can be disposed
-	volatile bool _last_garbage;
-
-private: // Thread-Private data:
-	wirehair::Encoder _encoder;
-
-	// Code group size
-	int _group_largest, _group_count;
-
-	// Fixed code group list
-	Packet *_group_head, *_group_tail;
-
-	// Size of block for this group
-	int _group_block_size;
-
-	// Large message buffer for code group
-	SmartArray<u8> _encode_buffer;
-
-	CAT_INLINE void FreeGarbage() {
-		if (_last_garbage) {
-			_last_garbage = false;
-			// Free packet buffers
-			_allocator->ReleaseBatch(BatchSet(_group_head, _group_tail));
-		}
-	}
-
-	virtual bool Entrypoint(void *param);
-
-	void Process();
-
-public:
-	CAT_INLINE EncoderThread() {
-		_initialized = false;
-	}
-	CAT_INLINE virtual ~EncoderThread() {
-		Finalize();
-	}
-
-	void Initialize(ReuseAllocator *allocator);
-	void Finalize();
-	Packet *Queue(int len);
-
-	CAT_INLINE int GetCurrentCount() {
-		return _block_count;
-	}
-
-	void EncodeQueued();
-
-	// Returns 0 if recovery blocks cannot be sent yet
-	int GenerateRecoveryBlock(u8 *buffer);
 };
 
 
@@ -336,18 +245,18 @@ protected:
  * Whenever a ping is requested, a new bin is started, the last
  * bin is frozen, and the last last bin is delivered.
  *
- * Minor wrinkle: IV values roll over after ~(u32)0, so we need
+ * Minor wrinkle: IV values roll over after 0xFFFF, so we need
  * to handle that.
  */
 
 class LossStatistics {
-	u32 _frozen_start;	// frozen bin = [start, current)
+	u16 _frozen_start;	// frozen bin = [start, current)
 	u32 _frozen_count;
 
-	u32 _current_start;	// [start, inf)
+	u16 _current_start;	// [start, inf)
 	u32 _current_count;
 
-	u32 _largest_iv;
+	u16 _largest_seq;
 
 	// Stats from last period
 	u32 _seen, _total;
@@ -366,20 +275,20 @@ public:
 		_frozen_count = 0;
 		_current_start = 0;
 		_current_count = 0;
-		_largest_iv = 0;
+		_largest_seq = 0;
 	}
 
 	// Update statistics
-	CAT_INLINE void Update(u32 iv) {
+	CAT_INLINE void Update(u16 seq) {
 		// Update largest IV seen
-		if ((s32)(iv - _largest_iv) > 0) {
-			_largest_iv = iv;
+		if ((s16)(seq - _largest_seq) > 0) {
+			_largest_seq = seq;
 		}
 
 		// Accumulate into a bin
-		if ((s32)(iv - _current_start) >= 0) {
+		if ((s16)(seq - _current_start) >= 0) {
 			_current_count++;
-		} else if ((s32)(iv - _frozen_start) >= 0) {
+		} else if ((s16)(seq - _frozen_start) >= 0) {
 			_frozen_count++;
 		}
 	}
@@ -395,9 +304,68 @@ public:
 		_frozen_count = _current_count;
 
 		// Make new set current
-		_current_start = _largest_iv + 1;
+		_current_start = (u16)(_largest_iv + 1);
 		_current_count = 0;
 	}
+};
+
+/*
+ * Encoder based on the Longhair CRS codec
+ */
+
+class Encoder {
+	bool _initialized;
+
+	// Packet buffers are allocated with room for the protocol overhead + data
+	ReuseAllocator *_allocator;
+
+	// Workspace to accumulate sent packets
+	Packet *_head, *_tail;
+	int _original_count;	// Number of blocks of original data
+	int _recovery_count;	// Number of recovery blocks to generate
+	int _largest;			// Number of bytes max, excluding 2 byte implied length field
+
+	// Next block id to produce
+	u32 _next_block_id;
+
+	// Large message buffer for code group
+	SmartArray<u8> _encode_buffer;
+
+	CAT_INLINE void FreeGarbage() {
+		_allocator->ReleaseBatch(BatchSet(_head, _tail));
+		_head = 0;
+		_tail = 0;
+	}
+
+public:
+	CAT_INLINE EncoderThread() {
+		_initialized = false;
+	}
+	CAT_INLINE virtual ~EncoderThread() {
+		Finalize();
+	}
+
+	void Initialize(ReuseAllocator *allocator);
+	void Finalize();
+
+	// Add an original packet
+	Packet *Queue(int len);
+
+	CAT_INLINE int GetCurrentCount() {
+		return _block_count;
+	}
+
+	void EncodeQueued(int recovery_count);
+
+	// Returns 0 if recovery blocks cannot be sent yet
+	int GenerateRecoveryBlock(u8 *buffer);
+};
+
+/*
+ * Decoder based on the Longhair CRS codec
+ */
+
+class Decoder {
 };
 
 
