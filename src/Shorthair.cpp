@@ -96,18 +96,6 @@ using namespace std;
  * the best error correction performance.  In practice we would want to send
  * an amount that is reasonable.
  *
- * Using Reed-Solomon codes can achieve high-performance at FIXED code rates.
- * Furthermore they need to be designed with a FIXED number of packets ahead of
- * time, which means that in practice people have been writing *many* RS codes
- * and selecting between them for a single application.  And it all needs to be
- * rewritten when requirements change.
- *
- * Wirehair improves on this, allowing us to use only as much bandwidth as
- * needed, covering any number of packets required.  These are "rateless" codes
- * that require an acceptable amount of performance loss compared to RS-codes,
- * and offering optimal use of the channel and lower latency compared to
- * ARQ-based approaches.
- *
  *
  * ==> What are the design decisions for error correction codes?
  *
@@ -133,9 +121,6 @@ using namespace std;
  *
  *
  * ==> (1) How should we interleave/overlap/etc the codes?
- *
- * Wirehair's encoder uses a roughly linear amount of memory and time based on
- * the size of the input, so running multiple encoders is efficient.
  *
  * Since the data is potentially being read from a receiver in real-time, the
  * original data is sent first, followed by the error correction symbols.
@@ -215,10 +200,6 @@ using namespace std;
  * (code group length) = ((buffer size) - (RTT_high/2)) / 2.1
  *
  * The 2.1 factor and RTT calculation can be modified for realistic scenarios.
- *
- * This gives us the number of packets to include in each group, and the data
- * encoder just alternates between two Wirehair instances, feeding one and
- * generating check symbols from the other.
  * 
  *
  * ==> Aside from FEC what else do we need?
@@ -264,53 +245,6 @@ using namespace std;
  */
 
 
-
-/*
- * Shorthair Protocol
- *
- * Source -> Sink data packet format:
- *
- * <SeqNo[2 bytes]>
- * <OOB[1 bit = 0] | group[7 bits]> : Out of band flag = 0
- * <block count[1 byte]>
- * <block id[1 bytes]>
- * Recovery only: <block size[2 bytes]>
- * {...block data...}
- *
- * Group: Which code group the data is associated with.
- * N = Block count: Total number of original data packets in this code group.
- * I = Block id: Identifier for this packet.
- *
- * In this scheme,
- * 		I < N are original, and
- * 		I >= N are recovery packets.
- *
- * The Block ID uses a wrapping counter that reduces an incrementing 32-bit
- * counter to a 16-bit counter assuming that packet re-ordering does not exceed
- * 32768 consecutive packets.  (IV works similarly to recover a 64-bit ID)
- *
- * Total overhead = 16 bytes per original packet.
- *
- *
- * Sink -> Source out-of-band packet format:
- *
- * <OOB[1 bit = 1] | group[7 bits]> : Out of band flag = 1
- * <packet type[1 byte]>
- *
- * Packet types:
- * group = input group
- * <packet type[1 byte] = 0xff>
- * <seen count[4 bytes]>
- * <total count[4 bytes]>
- *
- * This message is sent in reaction to a new code group on the receipt of the
- * first original data packet to update the source's redundancy in reaction to
- * measured packet loss as seen at the sink and to measure the round-trip time
- * for deciding how often to switch codes.
- *
- *
- * Out of band types are delivered to your callback.
- */
 
 /*
  * Normal Approximation to Bernoulli RV
@@ -1797,7 +1731,7 @@ void Shorthair::Tick() {
 
 			// NOTE: These packets will be spread out over the swap interval
 
-			// Start encoding queued data in another thread
+			// Encode queued data now
 			_encoder.EncodeQueued(_redundant_count);
 
 			CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
