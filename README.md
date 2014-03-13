@@ -1,4 +1,4 @@
-# Shorthair Low-Latency Networking
+# Shorthair Low-Latency Networking in C++
 
 Shorthair library uses the [Longhair library](https://github.com/catid/longhair) to provide low-latency loss-recovery, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
 
@@ -12,48 +12,19 @@ Advantages of using erasure codes in online games:
 
 Improves the experience for multiplayer mobile apps.
 
+Please take a look at my presentation on Erasure codes for more motivation:
+[Erasure Codes in Software](https://github.com/catid/shorthair/blob/master/docs/ErasureCodesInSoftware.pdf)
+
 #### Features:
 
++ Uses fastest, smallest Reed-Solomon codec available (Longhair).
 + Full-duplex communication over a lossy channel.
 + Adds a dial to control packet loss to any acceptable rate for applications over UDP.
 + Calculates and generates precisely the amount of redundancy required to achieve the target loss rate.
 + It supports variable-length data packets.
-+ Overhead is 16 bytes/packet.
-+ Provides data encryption and integrity validation.
-+ Redundant packets are 18 bytes + size of largest packet in the code group.
-+ Ruthlessly-optimized multi-threaded software.
++ Overhead is 5 bytes/packet.
++ Does not require multiple threads.
 + Library has a clean platform-independent interface with minimal configuration required.
-
-#### Cons:
-
-- Congestion control/avoidance is not provided.
-
-- It doesn't handle re-ordering.
-
-- It doesn't guarantee delivery of your data.
-
-#### In short, it solves the hardest problems of using UDP/IP.
-
-### Applications
-
-On top of Shorthair you can build any number of other transport protocols
-involving ordered-reliable, ordered-unreliable, and unordered-unreliable
-combinations.  As a black box you can treat it like normal UDP with some
-nice additional features (security, very low loss) as otherwise it works
-identically.
-
-ARQ can be built effectively on top of Shorthair producing a hybrid that has
-very low average latency and guaranteed delivery.  Sending a NACK over the
-reverse channel as normal data is an effective way to recover from losses for
-full reliability, whereas normal ARQ would suffer from over 2x the normal
-packet loss rate to recover from a loss event.
-
-Also consider a broadcast scenario with many receivers, where the loss rate
-is mulitplied by N.  Someone out there is going to have a bad time every
-time a new message is rebroadcast.
-
-I decided to split the transport layer into shorthair + ARQ/CC since for a
-lot of applications like audio streaming, ARQ and CC are not even desired.
 
 
 #### Credits
