@@ -45,11 +45,32 @@ namespace cat {
 namespace shorthair {
 
 
+/*
+ * Shorthair Protocol
+ *
+ * All packets have:
+ *
+ * <SeqNo [2 bytes]>
+ * <Out-of-Band [1 bit] || codeGroup [7 bits]>
+ *
+ * OOB=1 packet overhead stops here, but protected data has more overhead:
+ *
+ * <id [1 byte]> : 0..k-1 = original, k..k+m-1 = recovery
+ * <(k - 1) [1 byte]>
+ *
+ * Recovery packets (id >= blockCount) also have:
+ *
+ * <(m - 1) [1 byte]> : Parameter required to generate a proper decoding matrix
+ * <length [2 bytes]> : Inside encoded section, the original packet length
+ *
+ * {packet data here, rounded up to next multiple of 8 bytes}
+ */
+
 // Protocol constants
-static const int PROTOCOL_OVERHEAD = 1 + 1 + 1;
-static const int ORIGINAL_OVERHEAD = 2 + PROTOCOL_OVERHEAD; // 2 more for SeqNo
-static const int RECOVERY_OVERHEAD = 2 + PROTOCOL_OVERHEAD + 2; // and 2 more for size
-static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 7 bytes + longest packet size for recovery packets
+static const int PROTOCOL_OVERHEAD = 1 + 1 + 1; // Includes OOB/group, ID, and K
+static const int ORIGINAL_OVERHEAD = 2 + PROTOCOL_OVERHEAD; // + SeqNo
+static const int RECOVERY_OVERHEAD = 2 + 1 + 2 + PROTOCOL_OVERHEAD; // + seqNo + M + length
+static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
@@ -307,7 +328,7 @@ public:
 		_frozen_count = _current_count;
 
 		// Make new set current
-		_current_start = (u16)(_largest_iv + 1);
+		_current_start = (u16)(_largest_seq + 1);
 		_current_count = 0;
 	}
 };
@@ -323,17 +344,15 @@ class Encoder {
 	ReuseAllocator *_allocator;
 
 	// Workspace to accumulate sent packets
-	Packet *_head, *_tail;
-	int _original_count;	// Number of blocks of original data
-	int _recovery_count;	// Number of recovery blocks to generate
-	int _largest;			// Number of bytes max, excluding 2 byte implied length field
-	u8 *_data_ptrs[256];	// Pointers to data, used during encoding
+	Packet *_head, *_tail;		// Queued packets
+	int _original_count;		// Number of blocks of original data
+	int _largest;				// Number of bytes max, excluding 2 byte implied length field
 
-	// Large message buffer for code group
-	SmartArray<u8> _encode_buffer;
-
-	// Block index into encode buffer to send next
-	int _next_recovery_block;
+	// Workspace while sending recovery packets
+	SmartArray<u8> _buffer;		// Contains all recovery packets
+	int _k, _m;					// Codec parameter k, m
+	int _next_recovery_block;	// Index into encode buffer to send next
+	int _block_bytes;			// Block size in bytes
 
 	CAT_INLINE void FreeGarbage() {
 		_allocator->ReleaseBatch(BatchSet(_head, _tail));
@@ -342,10 +361,10 @@ class Encoder {
 	}
 
 public:
-	CAT_INLINE EncoderThread() {
+	CAT_INLINE Encoder() {
 		_initialized = false;
 	}
-	CAT_INLINE virtual ~EncoderThread() {
+	CAT_INLINE virtual ~Encoder() {
 		Finalize();
 	}
 

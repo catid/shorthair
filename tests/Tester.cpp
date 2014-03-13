@@ -1,4 +1,4 @@
-#include "shorthair/Shorthair.hpp"
+#include "Shorthair.hpp"
 #include "MersenneTwister.hpp"
 using namespace cat;
 using namespace shorthair;

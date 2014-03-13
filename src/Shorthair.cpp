@@ -1071,8 +1071,12 @@ void Encoder::Initialize(ReuseAllocator *allocator) {
 	_tail = 0;
 	_original_count = 0;
 	_recovery_count = 0;
+	_k = 0;
+	_m = 0;
+	_next_recovery_block = 0;
+	_block_bytes = 0;
 	_largest = 0;
-	_next_block_id = 0;
+
 	_initialized = true;
 }
 
@@ -1097,12 +1101,12 @@ Packet *Encoder::Queue(int len) {
 	}
 
 	// Insert at end of list
-	if (_sent_tail) {
-		_sent_tail->batch_next = p;
+	if (_tail) {
+		_tail->batch_next = p;
 	} else {
-		_sent_head = p;
+		_head = p;
 	}
-	_sent_tail = p;
+	_tail = p;
 
 	_block_count++;
 	// NOTE: Not all block sizes are supported and some data may be dropped
@@ -1111,71 +1115,123 @@ Packet *Encoder::Queue(int len) {
 }
 
 void Encoder::EncodeQueued(int m) {
-	int k = _block_count;
-	if (k <= 0) {
+	// Abort if input is invalid
+	CAT_DEBUG_ENFORCE(m > 0 && m < 256);
+	if (m < 1 || m >= 256) {
+		_m = 0;
 		return;
 	}
 
-	CAT_ENFORCE(m < 256);
+	const int k = _block_count;
+	CAT_DEBUG_ENFORCE(k < 256);
+	if (k <= 0 || k >= 256) {
+		_m = 0;
+		return;
+	}
 
-	_recovery_count = m;
-
-	// Truncate block count if needed
+	// Truncate recovery count if needed (always possible)
 	if (k + m > 256) {
-		k = 256 - m;
+		m = 256 - k;
 	}
 
-	// Calculate block size
-	const int pad_size = _largest;
-	const int block_size = 2 + pad_size;
+	// Optimization: If k = 1,
+	if (k == 1) {
+		CAT_DEBUG_ENFORCE(_head != 0);
+		CAT_DEBUG_ENFORCE(_head->len == _largest);
 
-	// Massage data for use in codec
-	int index = 0;
-	for (Packet *p = _group_head; index < k && p; p = (Packet*)p->batch_next, ++index) {
-		u8 *buffer = p->data;
-		u16 len = p->len;
+		_k = 1; // Treated specially during generation
+		_block_bytes = _largest;
 
-		// Setup data pointer
-		_data_ptrs[index] = buffer + ORIGINAL_OVERHEAD - 2;
+		_buffer.resize(_largest);
 
-		// Prefix data by its length
-		*(u16*)buffer = getLE16(len);
+		memcpy(_buffer.get(), _head->data, _block_bytes);
+	} else {
+		CAT_DEBUG_ENFORCE(_largest > 0);
 
-		// Pad message up to the block size with zeroes
-		CAT_CLR(buffer + len + 2, pad_size - len);
+		// Calculate block size
+		int block_size = 2 + _largest;
+
+		// Round up to the nearest multiple of 8
+		block_size = (u32)(block_size + 7) & ~(u32)7;
+
+		CAT_DEBUG_ENFORCE(block_size % 8 == 0);
+
+		u8 *data_ptrs[256];
+		int index = 0;
+
+		// Massage data for use in codec
+		for (Packet *p = _head; index < k && p; p = (Packet*)p->batch_next, ++index) {
+			u8 *buffer = p->data;
+			u16 len = p->len;
+
+			// Setup data pointer
+			data_ptrs[index] = buffer + ORIGINAL_OVERHEAD - 2;
+
+			// Prefix data by its length
+			*(u16*)buffer = getLE16(len);
+
+			// Pad message up to the block size with zeroes
+			CAT_CLR(buffer + len + 2, pad_size - len);
+		}
+
+		// Set up encode buffer to receive the recovery blocks
+		_buffer.resize(m * block_size);
+
+		// Produce recovery blocks
+		cauchy_256_encode(k, m, data_ptrs, _buffer.get(), block_size);
+
+		// Start from from of encode buffer
+		_next_recovery_block = 0;
+
+		// Store block size
+		_block_bytes = block_size;
+
+		// Store parameters
+		_m = m;
+		_k = k;
 	}
 
-	// Set up encode buffer to receive the recovery blocks
-	_encode_buffer.resize(m * block_size);
+	// Reset encoder queuing:
 
-	// Produce recovery blocks
-	cauchy_256_encode(k, m, _data_ptrs, _encode_buffer.get(), block_size);
+	FreeGarbage();
 
-	// Start from from of encode buffer
-	_next_recovery_block = 0;
+	_original_count = 0;
+	_largest = 0;
 }
 
 // Returns 0 if recovery blocks cannot be sent yet
 int Encoder::GenerateRecoveryBlock(u8 *buffer) {
+	const int block_bytes = _block_bytes;
+
+	// Optimization: If k = 1,
+	if (_k == 1) {
+		// Write special form
+		buffer[0] = 0;
+		buffer[1] = 0;
+		memcpy(buffer + 2, _buffer.get(), block_bytes);
+
+		return 2 + block_bytes;
+	}
+
 	// If ran out of recovery data to send,
-	if (_next_recovery_block >= _recovery_count) {
+	if (_next_recovery_block >= _m) {
 		return 0;
 	}
 
 	const int index = _next_recovery_block++;
 
 	// Write header
-	buffer[0] = (u8)(_original_count + index);
-	buffer[1] = (u8)(_original_count - 1);
+	buffer[0] = (u8)(_k + index);
+	buffer[1] = (u8)(_k - 1);
+	buffer[2] = (u8)(_m - 1);
 
-	const int block_bytes = 2 + _largest;
-	const u8 *src =  _encode_buffer.get() + block_bytes * index;
+	const u8 *src = _buffer.get() + block_bytes * index;
 
 	// Write data
-	memcpy(buffer + 2, src, block_bytes);
+	memcpy(buffer + 3, src, block_bytes);
 
 	// Return bytes written
-	return 2 + block_bytes;
+	return 3 + block_bytes;
 }
 
 
@@ -1256,33 +1312,34 @@ void Shorthair::UpdateLoss(u32 seen, u32 count) {
 }
 
 void Shorthair::OnOOB(u8 *pkt, int len) {
+	CAT_DEBUG_ENFORCE(len > 0);
+
 	// If truncated,
 	if (len < 1) {
 		// Ignore empty OOB packets
 		return;
 	}
 
-	switch (pkt[0]) {
-		case PONG_TYPE:
-			if (len == PONG_SIZE) {
-				u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
-				u32 seen = getLE(*(u32*)(pkt + 2));
-				u32 count = getLE(*(u32*)(pkt + 2 + 4));
-				int rtt = _clock.msec() - _group_stamps[code_group];
+	// If it is a pong,
+	if (len == PONG_SIZE && pkt[0] == PONG_TYPE) {
+		u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
+		u32 seen = getLE(*(u32*)(pkt + 2));
+		u32 count = getLE(*(u32*)(pkt + 2 + 4));
+		int rtt = _clock.msec() - _group_stamps[code_group];
 
-				// Calculate RTT
-				if (rtt >= 0) {
-					// Compute updates
-					UpdateRTT(rtt);
-					UpdateLoss(seen, count);
-				}
+		// Calculate RTT
+		if (rtt >= 0) {
+			// Compute updates
+			UpdateRTT(rtt);
+			UpdateLoss(seen, count);
+		}
 
-				CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;)
-			}
-			break;
-		default:
-			// Pass unrecognized OOB data to the interface
-			_settings.interface->OnOOB(pkt, len);
+		CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl);
+	} else {
+		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << endl);
+
+		// Pass unrecognized OOB data to the interface
+		_settings.interface->OnOOB(pkt, len);
 	}
 }
 
@@ -1318,6 +1375,9 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 		blocks[index].row = (u8)rp->id;
 	}
 
+	CAT_DEBUG_ENFORCE(k + m <= 256);
+	CAT_DEBUG_ENFORCE(index == k);
+
 	const int m = group->recovery_count;
 
 	// Decode the data
@@ -1329,11 +1389,11 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 		const u8 *src = blocks[ii].data;
 		int len = getLE(*(u16*)src);
 
-		CAT_ENFORCE(len < 1500);
+		CAT_DEBUG_ENFORCE(len <= block_size - 2);
 
-		// TODO: Validate input length here
-
-		_settings.interface->OnPacket(src + 2, len);
+		if (len <= block_size - 2) {
+			_settings.interface->OnPacket(src + 2, len);
+		}
 	}
 }
 
@@ -1396,28 +1456,38 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			group->largest_id = id;
 		}
 
-		// Use it for recovery
+		// Pull in codec parameters
 		group->largest_len = data_len;
+		group->recovery_count = (u32)pkt[3] + 1;
+
+		// Skip over extra byte for m (see optimization below)
+		data++;
+		data_len--;
 	}
 
 	// If we know how many blocks to expect,
 	if (group->largest_id >= block_count) {
-		// If block count is special case 1,
-		if (block_count == 1) {
-			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
-			// If have not processed the original block yet,
-			if (group->original_seen == 0) {
-				// Process it immediately
-				_settings.interface->OnPacket(data, data_len);
-			}
+		// If we have received all original data without loss, (common case)
+		if (group->original_seen >= block_count) {
+			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 
+			// See above: Original data gets processed immediately
 			closeGroup(group, code_group);
 			return;
 		}
 
-		// If we have received all original data without loss,
-		if (group->original_seen >= block_count) {
-			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
+		// Optimization: If block count is special case 1,
+		if (block_count == 1) {
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
+
+			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
+
+			// It must be that this is a faked recovery packet, so we need
+			// to undo the "skip" above (see above)
+
+			// NOTE: In this special case all recovery packets are the same
+			// as the original packet: 00 00 data...
+			_settings.interface->OnPacket(data - 1, data_len + 1);
 
 			closeGroup(group, code_group);
 			return;

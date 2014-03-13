@@ -8,9 +8,9 @@ CCPP = clang++
 CC = clang
 OPTFLAGS = -O4
 DBGFLAGS = -g -O0 -DDEBUG
-CFLAGS = -Wall -fstrict-aliasing -I ./libcat -I ./longhair/include
+CFLAGS = -Wall -fstrict-aliasing -I ./libcat -I ./longhair/include -I ./include
 CPFLAGS = $(CFLAGS)
-LIBS = -lpthread
+LIBS =
 
 
 # Multi-threaded version avoids large latency spikes in encoder/decoder processing
@@ -18,14 +18,11 @@ LIBS = -lpthread
 
 # Object files
 
-mt_o = Mutex.o Thread.o
-libcat_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o \
+libcat_o = EndianNeutral.o Clock.o BitMath.o Enforcer.o \
 		   ReuseAllocator.o MemXOR.o SecureErase.o
-calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
-wirehair_o = Wirehair.o
-shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
-tester_o = Tester.o $(shorthair_o) $(libcat_o) $(mt_o)
-server_o = Server.o $(shorthair_o) $(libcat_o) $(mt_o)
+longhair_o = cauchy_256.o
+shorthair_o = Shorthair.o $(longhair_o)
+tester_o = Tester.o $(shorthair_o) $(libcat_o) MersenneTwister.o
 redundancy_o = Redundancy.o $(libcat_o)
 
 
@@ -41,41 +38,11 @@ debug : CFLAGS += $(DBGFLAGS)
 debug : tester
 
 
-# Library.ARM target
-
-library.arm : CCPP = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-g++
-library.arm : CPLUS_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
-library.arm : CC = /Volumes/casedisk/prefix/bin/arm-unknown-eabi-gcc
-library.arm : C_INCLUDE_PATH = /Volumes/casedisk/prefix/arm-unknown-eabi/include
-library.arm : library
-
-
-# Library target
-
-library : CFLAGS += -O3 -fomit-frame-pointer -funroll-loops -D_POSIX_THREADS
-library : $(shorthair_o) $(libcat_o)
-	ar rcs libshorthair.a $(shorthair_o) $(libcat_o)
-
-
-# Server target
-
-server : CFLAGS += $(OPTFLAGS)
-server : LIBS += -luv
-server : $(server_o)
-	$(CCPP) $(LIBS) -o server $(server_o)
-
-
 # tester executable
 
 tester : CFLAGS += -DCAT_CLOCK_EXTRA
 tester : $(tester_o)
 	$(CCPP) $(LIBS) -o tester $(tester_o)
-
-
-# tester objects
-
-Tester.o : Tester.cpp
-	$(CCPP) $(CPFLAGS) -c Tester.cpp
 
 
 # redundancy executable
@@ -85,13 +52,19 @@ redtest : $(redundancy_o)
 	$(CCPP) -o redtest $(redundancy_o)
 
 
-# redundancy objects
+# Test objects
 
-Redundancy.o : Redundancy.cpp
-	$(CCPP) $(CPFLAGS) -c Redundancy.cpp
+Tester.o : tests/Tester.cpp
+	$(CCPP) $(CPFLAGS) -c tests/Tester.cpp
+
+Redundancy.o : tests/Redundancy.cpp
+	$(CCPP) $(CPFLAGS) -c tests/Redundancy.cpp
 
 
 # LibCat objects
+
+MersenneTwister.o : libcat/MersenneTwister.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/MersenneTwister.cpp
 
 Clock.o : libcat/Clock.cpp
 	$(CCPP) $(CFLAGS) -c libcat/Clock.cpp
@@ -105,47 +78,20 @@ MemXOR.o : libcat/MemXOR.cpp
 MemSwap.o : libcat/MemSwap.cpp
 	$(CCPP) $(CFLAGS) -c libcat/MemSwap.cpp
 
-
-# Library objects
-
-cauchy_256.o : longhair/src/cauchy_256.cpp
-	$(CCPP) $(CFLAGS) -c longhair/src/cauchy_256.cpp
-
-
-# Multi-threading libcat objects
-
-Mutex.o : libcat/Mutex.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/Mutex.cpp
-
-Thread.o : libcat/Thread.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/Thread.cpp
-
-
-# Shared objects
-
-MersenneTwister.o : libcat/MersenneTwister.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/MersenneTwister.cpp
-
-BitMath.o : libcat/BitMath.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/BitMath.cpp
+Enforcer.o : libcat/Enforcer.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/Enforcer.cpp
 
 EndianNeutral.o : libcat/EndianNeutral.cpp
 	$(CCPP) $(CPFLAGS) -c libcat/EndianNeutral.cpp
 
-Clock.o : libcat/Clock.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/Clock.cpp
-
-Enforcer.o : libcat/Enforcer.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/Enforcer.cpp
-
 ReuseAllocator.o : libcat/ReuseAllocator.cpp
 	$(CCPP) $(CPFLAGS) -c libcat/ReuseAllocator.cpp
 
-MemXOR.o : libcat/MemXOR.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/MemXOR.cpp
 
-SecureErase.o : libcat/SecureErase.cpp
-	$(CCPP) $(CPFLAGS) -c libcat/SecureErase.cpp
+# Longhair objects
+
+cauchy_256.o : longhair/src/cauchy_256.cpp
+	$(CCPP) $(CFLAGS) -c longhair/src/cauchy_256.cpp
 
 
 
@@ -155,16 +101,10 @@ Shorthair.o : shorthair/Shorthair.cpp
 	$(CCPP) $(CPFLAGS) -c shorthair/Shorthair.cpp
 
 
-# Server objects
-
-Server.o : Server.cpp
-	$(CCPP) $(CPFLAGS) -c Server.cpp
-
-
 # Cleanup
 
 .PHONY : clean
 
 clean :
-	-rm tester $(tester_o)
+	-rm redtest tester *.o
 
