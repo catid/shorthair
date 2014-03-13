@@ -1,0 +1,6 @@
+[submodule "libcat"]
+	path = libcat
+	url = git@github.com:catid/libcat
+[submodule "longhair"]
+	path = longhair
+	url = git@github.com:catid/longhair

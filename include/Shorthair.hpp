@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -83,11 +83,6 @@ public:
 
 
 struct Settings {
-	// Did currrent instance initiate the data flow?
-	// Each side of the channel needs to pick an opposite role to ensure that
-	// the encryption works properly.
-	bool initiator;				// true = Client mode, false = Server mode
-
 	// Good default: 0.0001
 	double target_loss;			// Target packet loss rate
 
@@ -121,13 +116,10 @@ class Shorthair : protected GroupFlags {
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator _allocator;
 
-	// Encryption
-	calico::Calico _cipher;
+	// Next outgoing sequence number
+	u16 _out_seq;
 
 private:
-	//// Encoder
-	EncoderThread _encoder;
-
 	// Statistics
 	DelayEstimator _delay;
 	LossEstimator _loss;
@@ -146,6 +138,8 @@ private:
 	u32 _last_swap_time;
 	int _redundant_count, _redundant_sent;
 
+	Encoder _encoder;
+
 protected:
 	// Send a check symbol
 	bool SendCheckSymbol();
@@ -163,14 +157,7 @@ protected:
 	void OnOOB(u8 *pkt, int len);
 
 private:
-	//// Decoder
-	wirehair::Codec _decoder;
-
 	LossStatistics _stats;
-
-	// Is decoder active?
-	bool _decoding;
-	u8 _decoding_group;
 
 	// Next expected code group
 	u8 _last_group;
@@ -190,6 +177,17 @@ protected:
 	// From GroupFlags
 	virtual void OnGroupTimeout(const u8 group_code);
 
+	CAT_INLINE void openGroup(CodeGroup *group, int code_group) {
+		group->Open(_clock.msec());
+		GroupFlags::SetOpen(code_group);
+	}
+
+	CAT_INLINE void closeGroup(CodeGroup *group, int code_group) {
+		group->Close(_allocator);
+		GroupFlags::SetDone(code_group);
+		GroupFlags::ResetOpen(code_group);
+	}
+
 public:
 	CAT_INLINE Shorthair() {
 		_initialized = false;
@@ -208,7 +206,7 @@ public:
 	}
 
 	// On startup:
-	bool Initialize(const u8 key[SKEY_BYTES], const Settings &settings);
+	bool Initialize(const Settings &settings);
 
 	// Cleanup
 	void Finalize();

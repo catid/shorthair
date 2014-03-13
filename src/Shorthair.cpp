@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -36,7 +36,15 @@ using namespace shorthair;
 #include <vector>
 using namespace std;
 
-#define CAT_DUMP_SHORTHAIR
+
+#ifdef CAT_DEBUG
+
+#define CAT_DUMP_SHORTHAIR /* verbose output */
+//#define CRS_VALIDATE /* validate that CRS codec is working, breaks stuff */
+
+#include <SecureEqual.hpp>
+
+#endif
 
 #ifdef CAT_DUMP_SHORTHAIR
 #include <iostream>
@@ -262,22 +270,20 @@ using namespace std;
  *
  * Source -> Sink data packet format:
  *
- * <OOB[1 bit = 0] | group[7 bits]> (brook-wirehair) : Out of band flag = 0
- * <block count[2 bytes]> (brook-wirehair)
- * <block id[2 bytes]> (brook-wirehair)
- * <block size[2 bytes]> (brook: Only for recovery packets)
+ * <SeqNo[2 bytes]>
+ * <OOB[1 bit = 0] | group[7 bits]> : Out of band flag = 0
+ * <block count[1 byte]>
+ * <block id[1 bytes]>
+ * Recovery only: <block size[2 bytes]>
  * {...block data...}
- * <MAC[8 bytes]> (calico)
- * <IV[3 bytes]> (calico)
  *
- * MAC+IV are used for Calico encryption (11 bytes overhead).
  * Group: Which code group the data is associated with.
  * N = Block count: Total number of original data packets in this code group.
  * I = Block id: Identifier for this packet.
  *
  * In this scheme,
  * 		I < N are original, and
- * 		I >= N are Wirehair recovery packets.
+ * 		I >= N are recovery packets.
  *
  * The Block ID uses a wrapping counter that reduces an incrementing 32-bit
  * counter to a 16-bit counter assuming that packet re-ordering does not exceed
@@ -909,207 +915,6 @@ void DelayEstimator::Calculate() {
 }
 
 
-//// EncoderThread
-
-bool EncoderThread::Entrypoint(void *param) {
-	while (!_kill) {
-		_wake_lock.Enter();
-		if (!_kill) {
-			Process();
-		}
-	}
-
-	return true;
-}
-
-void EncoderThread::Process() {
-	_processing_lock.Enter();
-
-	// Byte per data chunk
-	int chunk_size = _group_largest;
-	int block_count = _group_count;
-
-	CAT_ENFORCE(block_count > 1 && chunk_size > 0);
-
-	// NOTE: Blocks are chunks with 2-byte lengths prepended
-	int block_size = 2 + chunk_size;
-	_group_block_size = block_size;
-
-	// Calculate size of encoded messages
-	u32 message_size = block_count * block_size;
-
-	// Grow buffer
-	_encode_buffer.resize(message_size);
-
-	// For each sent packet,
-	u8 *buffer = _encode_buffer.get();
-	for (Packet *p = _group_head; p; p = (Packet*)p->batch_next) {
-		u16 len = p->len;
-
-		CAT_ENFORCE(len <= chunk_size);
-
-		// Start each block off with the 16-bit size
-		*(u16*)buffer = getLE(len);
-		buffer += 2;
-
-		// Add packet data in
-		memcpy(buffer, p->data + PROTOCOL_OVERHEAD, len);
-
-		// Zero the high bytes
-		CAT_CLR(buffer + len, chunk_size - len);
-
-		// On to the next
-		buffer += chunk_size;
-	}
-
-	// NOTE: After this function call, the input data can be safely modified so long
-	// as Encode() requests come after the original data block count.
-	CAT_ENFORCE(!_encoder.BeginEncode(_encode_buffer.get(), message_size, block_size));
-
-	_next_block_id = block_count;
-
-	// Avoid re-ordering writes by optimizer at compile time
-	CAT_FENCE_COMPILER;
-
-	_encoder_ready = true;
-
-	_processing_lock.Leave();
-}
-
-void EncoderThread::Initialize(ReuseAllocator *allocator) {
-	Finalize();
-
-	_allocator = allocator;
-
-	_kill = false;
-	_last_garbage = false;
-	_encoder_ready = false;
-	_next_block_id = 0;
-	_largest = 0;
-	_block_count = 0;
-	_sent_head = _sent_tail = 0;
-
-	_wake_lock.Enter();
-
-	StartThread();
-
-	_initialized = true;
-}
-
-void EncoderThread::Finalize() {
-	if (_initialized) {
-		_kill = true;
-
-		_wake_lock.Leave();
-
-		WaitForThread();
-
-		FreeGarbage();
-
-		_initialized = false;
-	}
-}
-
-Packet *EncoderThread::Queue(int len) {
-	CAT_ENFORCE(len > 0);
-
-	// Allocate sent packet buffer
-	Packet *p = _allocator->AcquireObject<Packet>();
-	p->batch_next = 0;
-	p->len = len;
-
-	// If this new packet is larger than the previous ones,
-	if (_largest < len) {
-		// Remember the largest size for when we start emitting check symbols
-		_largest = len;
-	}
-
-	// Insert at end of list
-	if (_sent_tail) {
-		_sent_tail->batch_next = p;
-	} else {
-		_sent_head = p;
-	}
-	_sent_tail = p;
-
-	++_block_count;
-
-	CAT_ENFORCE(_block_count <= CAT_WIREHAIR_MAX_N);
-
-	return p;
-}
-
-void EncoderThread::EncodeQueued() {
-	if (_block_count <= 0) {
-		return;
-	}
-
-	_processing_lock.Enter();
-
-	// NOTE: After N = 1 case, next time encoding starts it will free the last one
-	FreeGarbage();
-
-	// Move code group profile into private memory
-	_group_largest = _largest;
-	_group_count = _block_count;
-	_group_head = _sent_head;
-	_group_tail = _sent_tail;
-
-	// Flag garbage for takeout
-	_last_garbage = true;
-
-	// Clear the shared workspace for new data
-	_largest = 0;
-	_block_count = 0;
-	_sent_head = _sent_tail = 0;
-
-	// If N = 1,
-	if (_group_count <= 1) {
-		// Set up for special mode
-		_encoder_ready = true;
-		_group_block_size = _group_largest;
-
-		_processing_lock.Leave();	
-	} else {
-		// Flag encoder as being busy processing previous data
-		_encoder_ready = false;
-
-		_processing_lock.Leave();	
-
-		// Wake up the processing thread
-		_wake_lock.Leave();
-	}
-}
-
-// Returns 0 if recovery blocks cannot be sent yet
-int EncoderThread::GenerateRecoveryBlock(u8 *buffer) {
-	if (!_encoder_ready) {
-		return 0;
-	}
-
-	// Get next block ID to send
-	u32 block_id = _next_block_id++;
-
-	// Add low bits of check symbol number
-	*(u16*)buffer = getLE((u16)block_id);
-
-	// Add block count
-	*(u16*)(buffer + 2) = getLE((u16)_group_count);
-
-	// If single packet,
-	if (_group_count == 1) {
-		// Copy original data directly
-		memcpy(buffer + 4, _group_head->data + PROTOCOL_OVERHEAD, _group_block_size);
-	} else {
-		CAT_ENFORCE(_group_block_size == (int)_encoder.Encode(block_id, buffer + 4));
-
-		FreeGarbage();
-	}
-
-	return 4 + _group_block_size;
-}
-
-
 //// CodeGroup
 
 void CodeGroup::Open(u32 ms) {
@@ -1258,27 +1063,254 @@ void GroupFlags::ClearOpposite(const u8 group) {
 }
 
 
+//// Encoder
+
+void Encoder::Initialize(ReuseAllocator *allocator) {
+	Finalize();
+
+	_allocator = allocator;
+	_head = 0;
+	_tail = 0;
+	_original_count = 0;
+	_k = 0;
+	_m = 0;
+	_next_recovery_block = 0;
+	_block_bytes = 0;
+	_largest = 0;
+
+	_initialized = true;
+}
+
+void Encoder::Finalize() {
+	if (_initialized) {
+		FreeGarbage();
+	}
+}
+
+Packet *Encoder::Queue(int len) {
+	CAT_ENFORCE(len > 0);
+
+	// Allocate sent packet buffer
+	Packet *p = _allocator->AcquireObject<Packet>();
+	p->batch_next = 0;
+	p->len = len;
+
+	// If this new packet is larger than the previous ones,
+	if (_largest < len) {
+		// Remember the largest size for when we start emitting check symbols
+		_largest = len;
+	}
+
+	// Insert at end of list
+	if (_tail) {
+		_tail->batch_next = p;
+	} else {
+		_head = p;
+	}
+	_tail = p;
+
+	_original_count++;
+	// NOTE: Not all block sizes are supported and some data may be dropped
+
+	return p;
+}
+
+void Encoder::EncodeQueued(int m) {
+	// Abort if input is invalid
+	CAT_DEBUG_ENFORCE(m > 0);
+	if (m < 1) {
+		_m = 0;
+		return;
+	}
+
+	const int k = _original_count;
+	CAT_DEBUG_ENFORCE(k < 256);
+	if (k <= 0 || k >= 256) {
+		_m = 0;
+		return;
+	}
+
+	// Truncate recovery count if needed (always possible)
+	if (k + m > 256) {
+		m = 256 - k;
+	}
+
+	// Optimization: If k = 1,
+	if (k == 1) {
+		CAT_DEBUG_ENFORCE(_head != 0);
+		CAT_DEBUG_ENFORCE(_head->len == _largest);
+
+		_k = 1; // Treated specially during generation
+		_block_bytes = _largest;
+
+		_buffer.resize(_largest);
+
+		memcpy(_buffer.get(), _head->data, _block_bytes);
+	} else {
+		CAT_DEBUG_ENFORCE(_largest > 0);
+
+		// Calculate block size
+		int block_size = 2 + _largest;
+
+		// Round up to the nearest multiple of 8
+		block_size = (u32)(block_size + 7) & ~(u32)7;
+
+		CAT_DEBUG_ENFORCE(block_size % 8 == 0);
+
+		const u8 *data_ptrs[256];
+		int index = 0;
+
+		// Massage data for use in codec
+		for (Packet *p = _head; index < k && p; p = (Packet*)p->batch_next, ++index) {
+			u8 *buffer = p->data + ORIGINAL_OVERHEAD - 2;
+			u16 len = p->len;
+
+			// Setup data pointer
+			data_ptrs[index] = buffer;
+
+			// Prefix data by its length
+			*(u16*)buffer = getLE16(len);
+
+			// Pad message up to the block size with zeroes
+			CAT_CLR(buffer + len + 2, block_size - (len + 2));
+		}
+
+		// Set up encode buffer to receive the recovery blocks
+		_buffer.resize(m * block_size);
+
+		// Produce recovery blocks
+		CAT_ENFORCE(0 == cauchy_256_encode(k, m, data_ptrs, _buffer.get(), block_size));
+
+#ifdef CRS_VALIDATE
+		{
+			//cout << "k = " << k << " m = " << m << " blockSize = " << block_size << endl;
+
+			Block blocks[256];
+
+			for (int ii = 0; ii < k; ++ii) {
+				blocks[ii].data = (u8*)data_ptrs[ii];
+				blocks[ii].row = (u8)ii;
+			}
+
+			int rem = k;
+			for (int ii = 0; ii < m; ++ii) {
+				int jj = rand() % rem;
+
+				--rem;
+
+				for (int kk = jj; kk < rem; ++kk) {
+					blocks[kk].data = blocks[kk + 1].data;
+					blocks[kk].row = blocks[kk + 1].row;
+				}
+
+				blocks[rem].data = _buffer.get() + ii * block_size;
+				blocks[rem].row = k + ii;
+			}
+/*
+			cout << "Before decode:" << endl;
+			for (int ii = 0; ii < k; ++ii) {
+				cout << (int)blocks[ii].row << endl;
+			}
+			for (int ii = 0; ii < k; ++ii) {
+				for (int jj = 0; jj < block_size; ++jj) {
+					cout << ii << ", " << jj << " = " << (int)blocks[ii].data[jj] << endl;
+				}
+			}
+*/
+			CAT_ENFORCE(0 == cauchy_256_decode(k, m, blocks, block_size));
+/*
+			cout << "After decode:" << endl;
+			for (int ii = 0; ii < k; ++ii) {
+				cout << (int)blocks[ii].row << endl;
+			}
+			for (int ii = 0; ii < k; ++ii) {
+				for (int jj = 0; jj < block_size; ++jj) {
+					cout << ii << ", " << jj << " = " << (int)blocks[ii].data[jj] << endl;
+				}
+			}
+*/
+			for (int ii = 0; ii < k; ++ii) {
+				CAT_ENFORCE(SecureEqual(blocks[ii].data, data_ptrs[blocks[ii].row], block_size));
+			}
+		}
+#endif
+
+		// Start from from of encode buffer
+		_next_recovery_block = 0;
+
+		// Store block size
+		_block_bytes = block_size;
+
+		// Store parameters
+		_m = m;
+		_k = k;
+	}
+
+	// Reset encoder queuing:
+
+	FreeGarbage();
+
+	_original_count = 0;
+	_largest = 0;
+}
+
+// Returns 0 if recovery blocks cannot be sent yet
+int Encoder::GenerateRecoveryBlock(u8 *buffer) {
+	const int block_bytes = _block_bytes;
+
+	// Optimization: If k = 1,
+	if (_k == 1) {
+		// Write special form
+		buffer[0] = 0;
+		buffer[1] = 0;
+		memcpy(buffer + 2, _buffer.get(), block_bytes);
+
+		return 2 + block_bytes;
+	}
+
+	// If ran out of recovery data to send,
+	if (_next_recovery_block >= _m) {
+		return 0;
+	}
+
+	const int index = _next_recovery_block++;
+
+	// Write header
+	buffer[0] = (u8)(_k + index);
+	buffer[1] = (u8)(_k - 1);
+	buffer[2] = (u8)(_m - 1);
+
+	const u8 *src = _buffer.get() + block_bytes * index;
+
+	// Write data
+	memcpy(buffer + 3, src, block_bytes);
+
+	// Return bytes written
+	return 3 + block_bytes;
+}
+
+
 //// Shorthair : Encoder
 
 // Send a check symbol
 bool Shorthair::SendCheckSymbol() {
 	u8 *buffer = _packet_buffer.get();
-	int bytes = _encoder.GenerateRecoveryBlock(buffer + 1);
+	int len = _encoder.GenerateRecoveryBlock(buffer + 3);
 
 	// If no data to send,
-	if (bytes <= 0) {
+	if (len <= 0) {
 		// Abort
 		return false;
 	}
 
-	// Prepend the code group
-	buffer[0] = _code_group & 0x7f;
+	// Insert next sequence number
+	*(u16*)buffer = getLE16(_out_seq++);
 
-	// Encrypt
-	bytes = _cipher.Encrypt(buffer, 1 + bytes, buffer, _packet_buffer.size());
+	// Prepend the code group
+	buffer[2] = _code_group & 0x7f;
 
 	// Transmit
-	_settings.interface->SendData(buffer, bytes);
+	_settings.interface->SendData(buffer, len + 3);
 
 	return true;
 }
@@ -1335,27 +1367,33 @@ void Shorthair::UpdateLoss(u32 seen, u32 count) {
 }
 
 void Shorthair::OnOOB(u8 *pkt, int len) {
-	switch (pkt[1]) {
-		case PONG_TYPE:
-			if (len == PONG_SIZE) {
-				u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
-				u32 seen = getLE(*(u32*)(pkt + 2));
-				u32 count = getLE(*(u32*)(pkt + 2 + 4));
-				int rtt = _clock.msec() - _group_stamps[code_group];
+	// If truncated,
+	CAT_DEBUG_ENFORCE(len > 1);
+	if (len < 2) {
+		// Ignore empty OOB packets
+		return;
+	}
 
-				// Calculate RTT
-				if (rtt >= 0) {
-					// Compute updates
-					UpdateRTT(rtt);
-					UpdateLoss(seen, count);
-				}
+	// If it is a pong,
+	if (len == PONG_SIZE && pkt[1] == PONG_TYPE) {
+		u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
+		u32 seen = getLE(*(u32*)(pkt + 2));
+		u32 count = getLE(*(u32*)(pkt + 2 + 4));
+		int rtt = _clock.msec() - _group_stamps[code_group];
 
-				CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl;)
-			}
-			break;
-		default:
-			// Pass unrecognized OOB data to the interface
-			_settings.interface->OnOOB(pkt + 1, len - 1);
+		// Calculate RTT
+		if (rtt >= 0) {
+			// Compute updates
+			UpdateRTT(rtt);
+			UpdateLoss(seen, count);
+		}
+
+		CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl);
+	} else {
+		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[1] << endl);
+
+		// Pass unrecognized OOB data to the interface
+		_settings.interface->OnOOB(pkt, len);
 	}
 }
 
@@ -1363,34 +1401,62 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 //// Shorthair : Decoder
 
 void Shorthair::RecoverGroup(CodeGroup *group) {
-	// Allocate space for recovered packet
-	Packet *temp = _allocator.AcquireObject<Packet>();
-	temp->batch_next = 0;
+	// The block size will be the largest data chunk we have
+	const int block_size = group->largest_len;
+	const int k = group->block_count;
 
-	int block_count = group->block_count;
-	u8 *data = temp->data;
+	int index = 0;
+	Block blocks[256];
 
-	// Packet IDs are stored in order
-	Packet *p = group->head;
+	// Add original packets
+	for (Packet *op = group->head; op; op = (Packet*)op->batch_next) {
+		// We need to pad it out to the block size with zeroes.
+		// Get length of original packet
+		u16 op_len = getLE(*(u16*)op->data);
 
-	for (int ii = 0; ii < block_count; ++ii) {
-		// If we already got that packet,
-		if (p && p->id == (u32)ii) {
-			// Advance to next packet we have
-			p = (Packet*)p->batch_next;
-		} else {
-			// Reconstruct the block for the next expected ID
-			_decoder.ReconstructBlock(ii, data);
+		// Clear everything after length + original data with zeroes
+		CAT_CLR(op->data + 2 + op_len, block_size - (op_len + 2));
 
-			// Reconstruct data length
-			int len = getLE(*(u16*)data);
+		// Fill in block for codec
+		blocks[index].data = op->data;
+		blocks[index].row = (u8)op->id;
 
-			// Handle data ASAP
-			_settings.interface->OnPacket(data + 2, len);
-		}
+		++index;
 	}
 
-	_allocator.ReleaseBatch(temp);
+	CAT_DEBUG_ENFORCE(index == group->original_seen);
+
+	// Add recovery packets up to k
+	for (Packet *rp = group->recovery_head; index < k && rp; rp = (Packet*)rp->batch_next) {
+		// Fill in block for codec
+		blocks[index].data = rp->data;
+		blocks[index].row = (u8)rp->id;
+
+		++index;
+	}
+
+	const int m = group->recovery_count;
+
+	CAT_DEBUG_ENFORCE(k + m <= 256);
+	CAT_DEBUG_ENFORCE(index == k);
+
+	CAT_IF_DUMP(cout << "CRS decode with k=" << k << ", m=" << m << " block_size=" << block_size << " #originals=" << group->original_seen << endl);
+
+	// Decode the data
+	CAT_ENFORCE(0 == cauchy_256_decode(k, m, blocks, block_size));
+
+	// For each recovery packet,
+	for (int ii = group->original_seen; ii < k; ++ii) {
+		// The data was decoded in-place
+		u8 *src = blocks[ii].data;
+		int len = getLE(*(u16*)src);
+
+		CAT_DEBUG_ENFORCE(len <= block_size - 2);
+
+		if (len <= block_size - 2) {
+			_settings.interface->OnPacket(src + 2, len);
+		}
+	}
 }
 
 // On receiving a data packet
@@ -1400,7 +1466,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	}
 
 	// Read packet data
-	u8 code_group = ReconstructCounter<7, u8>(_last_group, pkt[0]);
+	int code_group = (u32)ReconstructCounter<7, u8>(_last_group, pkt[0]);
 	CodeGroup *group = &_groups[code_group];
 	_last_group = code_group;
 
@@ -1412,16 +1478,16 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If group is not open yet,
 	if (!group->open) {
-		// Open group
-		group->Open(_clock.msec());
-		GroupFlags::SetOpen(code_group);
+		openGroup(group, code_group);
+
 		CAT_IF_DUMP(cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;)
 	}
 
-	u32 id = getLE(*(u16*)(pkt + 1));
-	u16 block_count = getLE(*(u16*)(pkt + 1 + 2));
+	int id = (u32)pkt[1];
+	int block_count = (u32)pkt[2] + 1;
+
 	u8 *data = pkt + PROTOCOL_OVERHEAD;
-	u16 data_len = (u16)(len - PROTOCOL_OVERHEAD);
+	int data_len = len - PROTOCOL_OVERHEAD;
 
 	// If block count is not the largest seen for this group,
 	if (block_count < group->block_count) {
@@ -1432,24 +1498,10 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->block_count = block_count;
 	}
 
-	// Reconstruct block id
-	id = ReconstructCounter<16, u32>(group->largest_id, id);
-
 	// Pong first packet of each group as fast as possible
+	// TODO: This is probably sending too much data in a lot of cases
 	if (id == 0) {
 		SendPong(code_group);
-	}
-
-	// If ID is the largest seen so far,
-	if (id > group->largest_id) {
-		// Update largest seen ID for decoding ID in next packet
-		group->largest_id = id;
-	}
-
-	// If data length is the largest seen so far,
-	if (data_len > group->largest_len) {
-		// Use it for recovery
-		group->largest_len = data_len;
 	}
 
 	// If packet contains original data,
@@ -1459,32 +1511,40 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 		// Increment original seen count
 		group->original_seen++;
+	} else {
+		// If ID is the largest seen so far,
+		if (id > group->largest_id) {
+			// Update largest seen ID for decoding ID in next packet
+			group->largest_id = id;
+		}
+
+		// Pull in codec parameters
+		group->largest_len = data_len - 1;
+		group->recovery_count = (u32)pkt[3] + 1;
 	}
 
 	// If we know how many blocks to expect,
 	if (group->largest_id >= block_count) {
-		// If block count is special case 1,
-		if (block_count == 1) {
-			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
-			// If have not processed the original block yet,
-			if (group->original_seen == 0) {
-				// Process it immediately
-				_settings.interface->OnPacket(data, data_len);
-			}
+		// If we have received all original data without loss, (common case)
+		if (group->original_seen >= block_count) {
+			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
 
-			group->Close(_allocator);
-			GroupFlags::SetDone(code_group);
-			GroupFlags::ResetOpen(code_group);
+			// See above: Original data gets processed immediately
+			closeGroup(group, code_group);
 			return;
 		}
 
-		// If we have received all original data without loss,
-		if (group->original_seen >= block_count) {
-			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
-			// Close the group now
-			group->Close(_allocator);
-			GroupFlags::SetDone(code_group);
-			GroupFlags::ResetOpen(code_group);
+		// Optimization: If block count is special case 1,
+		if (block_count == 1) {
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
+
+			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
+
+			// NOTE: In this special case all recovery packets are the same
+			// as the original packet: 00 00 data...
+			_settings.interface->OnPacket(data, data_len);
+
+			closeGroup(group, code_group);
 			return;
 		}
 	}
@@ -1494,7 +1554,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	p->batch_next = 0;
 
 	// Store ID in id/len field
-	p->id = id;
+	p->id = (u16)id;
 
 	// If packet ID is from original set,
 	if (id < block_count) {
@@ -1502,14 +1562,14 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// NOTE: We cannot efficiently pad with zeroes yet because we do not
 		// necessarily know what the largest packet length is yet.  And anyway
 		// we may not need to pad at all if no loss occurs.
-		*(u16*)p->data = getLE(data_len);
+		*(u16*)p->data = getLE16((u16)data_len);
 		memcpy(p->data + 2, data, data_len);
 
 		// Insert it into the original packet list
 		group->AddOriginal(p);
 	} else {
 		// Store recovery packet, which has length included (encoded)
-		memcpy(p->data, data, data_len);
+		memcpy(p->data, data + 1, data_len - 1);
 
 		// Insert it into the recovery packet list
 		group->AddRecovery(p);
@@ -1520,81 +1580,11 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If recovery is now possible for this group,
 	if (group->CanRecover()) {
-		wirehair::Result r;
+		CAT_IF_DUMP(cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl);
 
-		// The block size will be the largest data chunk we have
-		const int block_size = group->largest_len;
+		RecoverGroup(group);
 
-		CAT_IF_DUMP(cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl;)
-
-		// If we are decoding this group for the first time,
-		if (!_decoding || _decoding_group != code_group) {
-			// Initialize the decoder
-			r = _decoder.InitializeDecoder(block_count * block_size, block_size);
-
-			// We should always initialize correctly
-			CAT_ENFORCE(!r && _decoder.BlockCount() == block_count);
-
-			// Decoding process has started
-			_decoding = true;
-			_decoding_group = code_group;
-
-			// Add original packets
-			for (Packet *op = group->head; op; op = (Packet*)op->batch_next) {
-				// We need to pad it out to the block size with zeroes.
-				// Get length of original packet
-				u16 op_len = getLE(*(u16*)op->data);
-
-				// Clear everything after length + original data with zeroes
-				CAT_CLR(op->data + 2 + op_len, block_size - (op_len + 2));
-
-				// Feed decoder with data
-				r = _decoder.DecodeFeed(op->id, op->data);
-
-				// We should not succeed at decoding at this point
-				CAT_ENFORCE(r);
-			}
-
-			// Add recovery packets
-			for (Packet *op = group->recovery_head; op; op = (Packet*)op->batch_next) {
-				// Feed decoder with data
-				r = _decoder.DecodeFeed(op->id, op->data);
-
-				// If decoding was successful,
-				if (!r) {
-					// Recover missing packets
-					RecoverGroup(group);
-					group->Close(_allocator);
-					CAT_IF_DUMP(cout << "GROUP RECOVERED IN ONE : " << (int)code_group << endl;)
-					GroupFlags::SetDone(code_group);
-					GroupFlags::ResetOpen(code_group);
-					_decoding = false;
-					break;
-				}
-			}
-		} else {
-			// Adding another packet to an existing decoder session:
-
-			// If packet is original,
-			if (id < block_count) {
-				// Clear everything after length + original data with zeroes
-				CAT_CLR(p->data + 2 + data_len, block_size - (data_len + 2));
-			}
-
-			// Attempt recovery
-			r = _decoder.DecodeFeed(id, p->data);
-
-			// If decoding was successful,
-			if (!r) {
-				// Recover missing packets
-				RecoverGroup(group);
-				group->Close(_allocator);
-				CAT_IF_DUMP(cout << "GROUP RECOVERED WITH EXTRA : " << (int)code_group << endl;)
-				GroupFlags::SetDone(code_group);
-				GroupFlags::ResetOpen(code_group);
-				_decoding = false;
-			}
-		}
+		closeGroup(group, code_group);
 	} // end if group can recover
 
 	// Clear opposite in number space
@@ -1605,21 +1595,21 @@ void Shorthair::OnData(u8 *pkt, int len) {
 void Shorthair::SendPong(int code_group) {
 	_stats.Calculate();
 
-	u8 pkt[PONG_SIZE + calico::Calico::OVERHEAD];
+	u8 pkt[2 + PONG_SIZE];
 
-	// Write packet
-	pkt[0] = (u8)code_group | 0x80;
-	pkt[1] = PONG_TYPE;
-	*(u32*)(pkt + 2) = getLE(_stats.GetSeen());
-	*(u32*)(pkt + 2 + 4) = getLE(_stats.GetTotal());
+	// Add sequence number to front
+	*(u16*)pkt = getLE16(_out_seq++);
 
-	// Encrypt pong
-	int len = _cipher.Encrypt(pkt, PONG_SIZE, pkt, sizeof(pkt));
+	// Mark as OOB
+	pkt[2] = (u8)code_group | 0x80;
 
-	CAT_DEBUG_ENFORCE(len == sizeof(pkt));
+	// Write pong data
+	pkt[3] = PONG_TYPE;
+	*(u32*)(pkt + 4) = getLE(_stats.GetSeen());
+	*(u32*)(pkt + 8) = getLE(_stats.GetTotal());
 
 	// Send it
-	_settings.interface->SendData(pkt, len);
+	_settings.interface->SendData(pkt, sizeof(pkt));
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
@@ -1631,16 +1621,14 @@ void Shorthair::OnGroupTimeout(const u8 group) {
 //// Shorthair: Interface
 
 // On startup:
-bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
+bool Shorthair::Initialize(const Settings &settings) {
 	Finalize();
+
+	cauchy_256_init();
 
 	_clock.OnInitialize();
 
 	_settings = settings;
-
-	if (_cipher.Initialize(key, "SHORTHAIR", _settings.initiator ? calico::INITIATOR : calico::RESPONDER)) {
-		return false;
-	}
 
 	CAT_ENFORCE(_settings.max_data_size <= MAX_CHUNK_SIZE);
 
@@ -1664,7 +1652,8 @@ bool Shorthair::Initialize(const u8 key[SKEY_BYTES], const Settings &settings) {
 	_code_group = 0;
 
 	_last_group = 0;
-	_decoding = false;
+
+	_out_seq = 0;
 
 	_stats.Initialize();
 
@@ -1693,7 +1682,7 @@ void Shorthair::Finalize() {
 	}
 }
 
-// Send a new packet
+// Send original data
 void Shorthair::Send(const void *data, int len) {
 	CAT_ENFORCE(len <= _settings.max_data_size);
 
@@ -1703,34 +1692,39 @@ void Shorthair::Send(const void *data, int len) {
 
 	const u8 packet_group = _code_group + 1;
 
+	// Insert sequence number at the front
+	*(u16*)buffer = getLE16(_out_seq++);
+
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[0] = packet_group & 0x7f;
+	buffer[2] = packet_group & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
 
 	// On first packet of a group,
+	// TODO: This doesn't seem like the best way
 	if (block_count == 1) {
 		// Tag this new group with the start time
 		_group_stamps[packet_group] = _clock.msec();
 	}
 
+	u8 id = (u8)(block_count - 1);
+
 	// Add check symbol number
-	*(u16*)(buffer + 1) = getLE16(block_count - 1);
+	buffer[3] = id; // id of packet
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
 	// NOTE: This allows the decoder to know when it has received
 	// all the packets in a code group for the zero-loss case.
-	*(u16*)(buffer + 1 + 2) = getLE(block_count);
+	buffer[4] = id; // k - 1
+
+	CAT_DEBUG_ENFORCE(ORIGINAL_OVERHEAD == 5);
 
 	// Copy input data into place
-	memcpy(buffer + PROTOCOL_OVERHEAD, data, len);
-
-	// Encrypt
-	int bytes = _cipher.Encrypt(buffer, PROTOCOL_OVERHEAD + len, _packet_buffer.get(), _packet_buffer.size());
+	memcpy(buffer + ORIGINAL_OVERHEAD, data, len);
 
 	// Transmit
-	_settings.interface->SendData(_packet_buffer.get(), bytes);
+	_settings.interface->SendData(buffer, len + ORIGINAL_OVERHEAD);
 }
 
 // Send an OOB packet, first byte is type code
@@ -1741,17 +1735,17 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 
 	u8 *buffer = _packet_buffer.get();
 
+	// Insert sequence number at the front (just to construct the packet)
+	*(u16*)buffer = getLE16(_out_seq++);
+
 	// Mark OOB
-	buffer[0] = 0x80;
+	buffer[2] = 0x80;
 
 	// Copy input data into place
-	memcpy(buffer + 1, data, len);
-
-	// Encrypt
-	int bytes = _cipher.Encrypt(buffer, 1 + len, buffer, _packet_buffer.size());
+	memcpy(buffer + 3, data, len);
 
 	// Transmit
-	_settings.interface->SendData(buffer, bytes);
+	_settings.interface->SendData(buffer, len + 3);
 }
 
 // Called once per tick, about 10-20 ms
@@ -1793,39 +1787,44 @@ void Shorthair::Tick() {
 		// Packet count
 		const int N = _encoder.GetCurrentCount();
 
-		// Calculate number of redundant packets to send this time
-		_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
-		_redundant_sent = 0;
+		if (N > 0) {
+			// Calculate number of redundant packets to send this time
+			_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
+			_redundant_sent = 0;
 
-		// Select next code group
-		_code_group++;
+			// Select next code group
+			_code_group++;
 
-		// NOTE: These packets will be spread out over the swap interval
+			// NOTE: These packets will be spread out over the swap interval
 
-		// Start encoding queued data in another thread
-		_encoder.EncodeQueued();
+			// Start encoding queued data in another thread
+			_encoder.EncodeQueued(_redundant_count);
 
-		CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl;)
+			CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
+		} else {
+			CAT_IF_DUMP(cout << "Attempted to open a new code group with no data" << endl);
+		}
 	}
 }
 
 // On packet received
 void Shorthair::Recv(void *pkt, int len) {
-	u8 *buffer = static_cast<u8*>( pkt );
+	// If the header is not truncated,
+	CAT_DEBUG_ENFORCE(len >= 3);
+	if (len >= 3) {
+		// Read 16-bit sequence number from the front
+		u16 seq = getLE16(*(u16*)pkt);
 
-	u64 iv;
-	len = _cipher.Decrypt(buffer, len, iv);
-
-	// If a message was decoded,
-	if (len >= 2) {
 		// Update stats
-		_stats.Update((u32)iv);
+		_stats.Update(seq);
+
+		u8 *buffer = static_cast<u8*>( pkt );
 
 		// If out of band,
-		if (buffer[0] & 0x80) {
-			OnOOB(buffer, len);
+		if (buffer[2] & 0x80) {
+			OnOOB(buffer + 2, len - 2);
 		} else {
-			OnData(buffer, len);
+			OnData(buffer + 2, len - 2);
 		}
 	}
 }

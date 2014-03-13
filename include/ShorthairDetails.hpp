@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -30,8 +30,7 @@
 #define CAT_SHORTHAIR_DETAILS_HPP
 
 // Support projects
-#include "../wirehair/Wirehair.hpp"
-#include "../calico/Calico.hpp"
+#include "cauchy_256.h"
 
 // Support tools
 #include "Clock.hpp"
@@ -41,27 +40,43 @@
 #include "ReuseAllocator.hpp"
 #include "SmartArray.hpp"
 
-// Multi-threading
-#include "Thread.hpp"
-#include "Mutex.hpp"
-
 namespace cat {
 
 namespace shorthair {
 
 
+/*
+ * Shorthair Protocol
+ *
+ * All packets have:
+ *
+ * <SeqNo [2 bytes]>
+ * <Out-of-Band [1 bit] || codeGroup [7 bits]>
+ *
+ * OOB=1 packet overhead stops here, but protected data has more overhead:
+ *
+ * <id [1 byte]> : 0..k-1 = original, k..k+m-1 = recovery
+ * <(k - 1) [1 byte]>
+ *
+ * Recovery packets (id >= blockCount) also have:
+ *
+ * <(m - 1) [1 byte]> : Parameter required to generate a proper decoding matrix
+ * <length [2 bytes]> : Inside encoded section, the original packet length
+ *
+ * {packet data here, rounded up to next multiple of 8 bytes}
+ */
+
 // Protocol constants
-static const int SKEY_BYTES = 32;
-static const int PROTOCOL_OVERHEAD = 1 + 2 + 2;
-static const int ORIGINAL_OVERHEAD = PROTOCOL_OVERHEAD + calico::Calico::OVERHEAD;
-static const int RECOVERY_OVERHEAD = PROTOCOL_OVERHEAD + 2 + calico::Calico::OVERHEAD;
-static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 18 bytes + longest packet size for recovery packets
+static const int PROTOCOL_OVERHEAD = 1 + 1 + 1; // Includes OOB/group, ID, and K
+static const int ORIGINAL_OVERHEAD = 2 + PROTOCOL_OVERHEAD; // + SeqNo
+static const int RECOVERY_OVERHEAD = 2 + 1 + 2 + PROTOCOL_OVERHEAD; // + seqNo + M + length
+static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
 // OOB Pong packet type
 static const u8 PONG_TYPE = 0xff;
-static const int PONG_SIZE = 1 + 1 + 4 + 4;
+static const int PONG_SIZE = 1 + 1 + 4 + 4; // Includes OOB byte + type
 
 
 //// LossEstimator
@@ -139,91 +154,6 @@ struct Packet : BatchHead {
 };
 
 
-//// EncoderThread
-
-/*
- * Run the encoder in a separate thread to avoid adding latency spikes
- * to the original data packet stream.
- *
- * Not thread-safe.  It assumes that only one thread is accessing its
- * interface at a time.
- */
-class EncoderThread : public Thread {
-protected: // Shared data:
-	bool _initialized;
-	volatile bool _kill;
-
-	// Packet buffers are allocated with room for the protocol overhead + data
-	ReuseAllocator *_allocator;
-
-	// Workspace to accumulate sent packets
-	Packet *_sent_head, *_sent_tail;
-	int _block_count;	// Number of blocks 
-	int _largest;		// Number of bytes max, excluding 2 byte implied length field
-
-	// Next block id to produce
-	u32 _next_block_id;
-
-	// Encoder is ready to produce symbols?
-	// Cleared by main thread, set by encoder thread
-	volatile bool _encoder_ready;
-
-	// Locks to hold during processing to avoid reentrancy
-	Mutex _wake_lock, _processing_lock;
-
-	// Indicates previous group can be disposed
-	volatile bool _last_garbage;
-
-private: // Thread-Private data:
-	wirehair::Encoder _encoder;
-
-	// Code group size
-	int _group_largest, _group_count;
-
-	// Fixed code group list
-	Packet *_group_head, *_group_tail;
-
-	// Size of block for this group
-	int _group_block_size;
-
-	// Large message buffer for code group
-	SmartArray<u8> _encode_buffer;
-
-	CAT_INLINE void FreeGarbage() {
-		if (_last_garbage) {
-			_last_garbage = false;
-			// Free packet buffers
-			_allocator->ReleaseBatch(BatchSet(_group_head, _group_tail));
-		}
-	}
-
-	virtual bool Entrypoint(void *param);
-
-	void Process();
-
-public:
-	CAT_INLINE EncoderThread() {
-		_initialized = false;
-	}
-	CAT_INLINE virtual ~EncoderThread() {
-		Finalize();
-	}
-
-	void Initialize(ReuseAllocator *allocator);
-	void Finalize();
-	Packet *Queue(int len);
-
-	CAT_INLINE int GetCurrentCount() {
-		return _block_count;
-	}
-
-	void EncodeQueued();
-
-	// Returns 0 if recovery blocks cannot be sent yet
-	int GenerateRecoveryBlock(u8 *buffer);
-};
-
-
 //// CodeGroup
 
 struct CodeGroup {
@@ -234,17 +164,20 @@ struct CodeGroup {
 	u32 open_time;
 
 	// Largest ID seen for each code group, for decoding the ID
-	u32 largest_id;
+	int largest_id;
 
 	// Largest seen data length
-	u16 largest_len;
+	int largest_len;
 
 	// Largest seen block count for each code group
-	u16 block_count;
+	int block_count;
+
+	// The number of recovery packets in the code group
+	int recovery_count;
 
 	// Received symbol counts
-	u16 original_seen;
-	u32 total_seen;
+	int original_seen;
+	int total_seen;
 
 	// Original symbols
 	Packet *head, *tail;
@@ -336,18 +269,18 @@ protected:
  * Whenever a ping is requested, a new bin is started, the last
  * bin is frozen, and the last last bin is delivered.
  *
- * Minor wrinkle: IV values roll over after ~(u32)0, so we need
+ * Minor wrinkle: IV values roll over after 0xFFFF, so we need
  * to handle that.
  */
 
 class LossStatistics {
-	u32 _frozen_start;	// frozen bin = [start, current)
+	u16 _frozen_start;	// frozen bin = [start, current)
 	u32 _frozen_count;
 
-	u32 _current_start;	// [start, inf)
+	u16 _current_start;	// [start, inf)
 	u32 _current_count;
 
-	u32 _largest_iv;
+	u16 _largest_seq;
 
 	// Stats from last period
 	u32 _seen, _total;
@@ -366,20 +299,20 @@ public:
 		_frozen_count = 0;
 		_current_start = 0;
 		_current_count = 0;
-		_largest_iv = 0;
+		_largest_seq = 0;
 	}
 
 	// Update statistics
-	CAT_INLINE void Update(u32 iv) {
+	CAT_INLINE void Update(u16 seq) {
 		// Update largest IV seen
-		if ((s32)(iv - _largest_iv) > 0) {
-			_largest_iv = iv;
+		if ((s16)(seq - _largest_seq) > 0) {
+			_largest_seq = seq;
 		}
 
 		// Accumulate into a bin
-		if ((s32)(iv - _current_start) >= 0) {
+		if ((s16)(seq - _current_start) >= 0) {
 			_current_count++;
-		} else if ((s32)(iv - _frozen_start) >= 0) {
+		} else if ((s16)(seq - _frozen_start) >= 0) {
 			_frozen_count++;
 		}
 	}
@@ -395,9 +328,67 @@ public:
 		_frozen_count = _current_count;
 
 		// Make new set current
-		_current_start = _largest_iv + 1;
+		_current_start = (u16)(_largest_seq + 1);
 		_current_count = 0;
 	}
+};
+
+/*
+ * Encoder based on the Longhair CRS codec
+ */
+
+class Encoder {
+	bool _initialized;
+
+	// Packet buffers are allocated with room for the protocol overhead + data
+	ReuseAllocator *_allocator;
+
+	// Workspace to accumulate sent packets
+	Packet *_head, *_tail;		// Queued packets
+	int _original_count;		// Number of blocks of original data
+	int _largest;				// Number of bytes max, excluding 2 byte implied length field
+
+	// Workspace while sending recovery packets
+	SmartArray<u8> _buffer;		// Contains all recovery packets
+	int _k, _m;					// Codec parameter k, m
+	int _next_recovery_block;	// Index into encode buffer to send next
+	int _block_bytes;			// Block size in bytes
+
+	CAT_INLINE void FreeGarbage() {
+		_allocator->ReleaseBatch(BatchSet(_head, _tail));
+		_head = 0;
+		_tail = 0;
+	}
+
+public:
+	CAT_INLINE Encoder() {
+		_initialized = false;
+	}
+	CAT_INLINE virtual ~Encoder() {
+		Finalize();
+	}
+
+	void Initialize(ReuseAllocator *allocator);
+	void Finalize();
+
+	// Add an original packet
+	Packet *Queue(int len);
+
+	CAT_INLINE int GetCurrentCount() {
+		return _original_count;
+	}
+
+	// Encode queued data into recovery blocks
+	void EncodeQueued(int recovery_count);
+
+	int GenerateRecoveryBlock(u8 *buffer);
+};
+
+/*
+ * Decoder based on the Longhair CRS codec
+ */
+
+class Decoder {
 };
 
 
