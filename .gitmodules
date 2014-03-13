@@ -1,0 +1,3 @@
+[submodule "libcat"]
+	path = libcat
+	url = git@github.com:catid/libcat

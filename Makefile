@@ -8,7 +8,7 @@ CCPP = clang++
 CC = clang
 OPTFLAGS = -O4
 DBGFLAGS = -g -O0 -DDEBUG
-CFLAGS = -Wall -fstrict-aliasing -I ./shared
+CFLAGS = -Wall -fstrict-aliasing -I ./libcat
 CPFLAGS = $(CFLAGS)
 LIBS = -lpthread
 
@@ -19,13 +19,13 @@ LIBS = -lpthread
 # Object files
 
 mt_o = Mutex.o Thread.o
-shared_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o
+libcat_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o MemXOR.o SecureErase.o
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
-wirehair_o = Wirehair.o memxor.o
+wirehair_o = Wirehair.o
 shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
-tester_o = Tester.o $(shorthair_o) $(shared_o) $(mt_o)
-server_o = Server.o $(shorthair_o) $(shared_o) $(mt_o)
-redundancy_o = Redundancy.o $(shared_o)
+tester_o = Tester.o $(shorthair_o) $(libcat_o) $(mt_o)
+server_o = Server.o $(shorthair_o) $(libcat_o) $(mt_o)
+redundancy_o = Redundancy.o $(libcat_o)
 
 
 # Release target (default)
@@ -52,8 +52,8 @@ library.arm : library
 # Library target
 
 library : CFLAGS += -O3 -fomit-frame-pointer -funroll-loops -D_POSIX_THREADS
-library : $(shorthair_o) $(shared_o)
-	ar rcs libshorthair.a $(shorthair_o) $(shared_o)
+library : $(shorthair_o) $(libcat_o)
+	ar rcs libshorthair.a $(shorthair_o) $(libcat_o)
 
 
 # Server target
@@ -90,43 +90,46 @@ Redundancy.o : Redundancy.cpp
 	$(CCPP) $(CPFLAGS) -c Redundancy.cpp
 
 
-# Multi-threading shared objects
+# Multi-threading libcat objects
 
-Mutex.o : shared/Mutex.cpp
-	$(CCPP) $(CPFLAGS) -c shared/Mutex.cpp
+Mutex.o : libcat/Mutex.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/Mutex.cpp
 
-Thread.o : shared/Thread.cpp
-	$(CCPP) $(CPFLAGS) -c shared/Thread.cpp
+Thread.o : libcat/Thread.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/Thread.cpp
 
 
 # Shared objects
 
-MersenneTwister.o : shared/MersenneTwister.cpp
-	$(CCPP) $(CPFLAGS) -c shared/MersenneTwister.cpp
+MersenneTwister.o : libcat/MersenneTwister.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/MersenneTwister.cpp
 
-BitMath.o : shared/BitMath.cpp
-	$(CCPP) $(CPFLAGS) -c shared/BitMath.cpp
+BitMath.o : libcat/BitMath.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/BitMath.cpp
 
-EndianNeutral.o : shared/EndianNeutral.cpp
-	$(CCPP) $(CPFLAGS) -c shared/EndianNeutral.cpp
+EndianNeutral.o : libcat/EndianNeutral.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/EndianNeutral.cpp
 
-Clock.o : shared/Clock.cpp
-	$(CCPP) $(CPFLAGS) -c shared/Clock.cpp
+Clock.o : libcat/Clock.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/Clock.cpp
 
-Enforcer.o : shared/Enforcer.cpp
-	$(CCPP) $(CPFLAGS) -c shared/Enforcer.cpp
+Enforcer.o : libcat/Enforcer.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/Enforcer.cpp
 
-ReuseAllocator.o : shared/ReuseAllocator.cpp
-	$(CCPP) $(CPFLAGS) -c shared/ReuseAllocator.cpp
+ReuseAllocator.o : libcat/ReuseAllocator.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/ReuseAllocator.cpp
+
+MemXOR.o : libcat/MemXOR.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/MemXOR.cpp
+
+SecureErase.o : libcat/SecureErase.cpp
+	$(CCPP) $(CPFLAGS) -c libcat/SecureErase.cpp
 
 
 # Wirehair objects
 
 Wirehair.o : wirehair/Wirehair.cpp
 	$(CCPP) $(CPFLAGS) -c wirehair/Wirehair.cpp
-
-memxor.o : wirehair/memxor.cpp
-	$(CCPP) $(CPFLAGS) -c wirehair/memxor.cpp
 
 
 # Calico objects
