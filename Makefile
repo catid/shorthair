@@ -13,9 +13,6 @@ CPFLAGS = $(CFLAGS)
 LIBS =
 
 
-# Multi-threaded version avoids large latency spikes in encoder/decoder processing
-
-
 # Object files
 
 libcat_o = EndianNeutral.o Clock.o BitMath.o Enforcer.o \

@@ -1,31 +1,27 @@
-This is an experimental version of Shorthair based on Longhair and the latest
-versions of all of the libraries.
-
-
 # Shorthair Low-Latency Networking
 
-The Shorthair library uses Calico and Wirehair to provide low-latency loss-prevention and data integrity, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
+Shorthair library uses the [Longhair library](https://github.com/catid/longhair) to provide low-latency loss-recovery, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
 
-#### Pros:
+Erasure codes in software are fast with low-overhead.
 
-+ Two-way communication over a single lossy channel.
+Advantages of using erasure codes in online games:
 
-+ You can dial the packet loss to any acceptable rate for your application.
++ > 50% faster delivery over UDP than over TCP
++ > 50% less bandwidth used than naive redundancy
++ > 50% better recovery rate than parity redundancy
 
-+ It has a RTT*3/2 upper-bound delay for the data it protects, which is the lower-bound for recovering data with ARQ.
+Improves the experience for multiplayer mobile apps.
 
+#### Features:
+
++ Full-duplex communication over a lossy channel.
++ Adds a dial to control packet loss to any acceptable rate for applications over UDP.
 + Calculates and generates precisely the amount of redundancy required to achieve the target loss rate.
-
 + It supports variable-length data packets.
-
 + Overhead is 16 bytes/packet.
-
 + Provides data encryption and integrity validation.
-
 + Redundant packets are 18 bytes + size of largest packet in the code group.
-
 + Ruthlessly-optimized multi-threaded software.
-
 + Library has a clean platform-independent interface with minimal configuration required.
 
 #### Cons:
