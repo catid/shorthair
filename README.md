@@ -1,3 +1,7 @@
+This is an experimental version of Shorthair based on Longhair and the latest
+versions of all of the libraries.
+
+
 # Shorthair Low-Latency Networking
 
 The Shorthair library uses Calico and Wirehair to provide low-latency loss-prevention and data integrity, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.

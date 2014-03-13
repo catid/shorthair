@@ -8,7 +8,7 @@ CCPP = clang++
 CC = clang
 OPTFLAGS = -O4
 DBGFLAGS = -g -O0 -DDEBUG
-CFLAGS = -Wall -fstrict-aliasing -I ./libcat
+CFLAGS = -Wall -fstrict-aliasing -I ./libcat -I ./longhair/include
 CPFLAGS = $(CFLAGS)
 LIBS = -lpthread
 
@@ -19,7 +19,8 @@ LIBS = -lpthread
 # Object files
 
 mt_o = Mutex.o Thread.o
-libcat_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o ReuseAllocator.o MemXOR.o SecureErase.o
+libcat_o = EndianNeutral.o Clock.o MersenneTwister.o BitMath.o Enforcer.o \
+		   ReuseAllocator.o MemXOR.o SecureErase.o
 calico_o = AntiReplayWindow.o Calico.o ChaChaVMAC.o Skein.o Skein256.o VHash.o
 wirehair_o = Wirehair.o
 shorthair_o = Shorthair.o ShorthairAPI.o $(wirehair_o) $(calico_o)
@@ -88,6 +89,27 @@ redtest : $(redundancy_o)
 
 Redundancy.o : Redundancy.cpp
 	$(CCPP) $(CPFLAGS) -c Redundancy.cpp
+
+
+# LibCat objects
+
+Clock.o : libcat/Clock.cpp
+	$(CCPP) $(CFLAGS) -c libcat/Clock.cpp
+
+BitMath.o : libcat/BitMath.cpp
+	$(CCPP) $(CFLAGS) -c libcat/BitMath.cpp
+
+MemXOR.o : libcat/MemXOR.cpp
+	$(CCPP) $(CFLAGS) -c libcat/MemXOR.cpp
+
+MemSwap.o : libcat/MemSwap.cpp
+	$(CCPP) $(CFLAGS) -c libcat/MemSwap.cpp
+
+
+# Library objects
+
+cauchy_256.o : longhair/src/cauchy_256.cpp
+	$(CCPP) $(CFLAGS) -c longhair/src/cauchy_256.cpp
 
 
 # Multi-threading libcat objects
