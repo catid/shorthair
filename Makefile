@@ -31,7 +31,7 @@ release : tester
 
 # Debug target
 
-debug : CFLAGS += $(DBGFLAGS)
+debug : CFLAGS += $(DBGFLAGS) -DCAT_DUMP_SHORTHAIR
 debug : tester
 
 

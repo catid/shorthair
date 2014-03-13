@@ -1626,7 +1626,7 @@ void Shorthair::Tick() {
 	int expected_sent = _redundant_count;
 
 	// If not swapping the encoder this tick,
-	if ((s32)recovery_time - (s32)_swap_interval < 0) {
+	if ((u32)recovery_time < _swap_interval) {
 		int elapsed = ((_redundant_count + 1) * recovery_time) / _swap_interval;
 
 		// Pick min(_redundant_count, elapsed)
@@ -1651,7 +1651,7 @@ void Shorthair::Tick() {
 	}
 
 	// If it is time to swap the encoder,
-	if ((s32)recovery_time - (s32)_swap_interval >= 0) {
+	if ((u32)recovery_time >= _swap_interval) {
 		_last_swap_time = ms;
 
 		// Packet count
