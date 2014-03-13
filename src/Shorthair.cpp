@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -1108,7 +1108,7 @@ Packet *Encoder::Queue(int len) {
 	}
 	_tail = p;
 
-	_block_count++;
+	_original_count++;
 	// NOTE: Not all block sizes are supported and some data may be dropped
 
 	return p;
@@ -1122,7 +1122,7 @@ void Encoder::EncodeQueued(int m) {
 		return;
 	}
 
-	const int k = _block_count;
+	const int k = _original_count;
 	CAT_DEBUG_ENFORCE(k < 256);
 	if (k <= 0 || k >= 256) {
 		_m = 0;
@@ -1642,25 +1642,30 @@ void Shorthair::Send(const void *data, int len) {
 	u16 block_count = _encoder.GetCurrentCount();
 
 	// On first packet of a group,
+	// TODO: This doesn't seem like the best way
 	if (block_count == 1) {
 		// Tag this new group with the start time
 		_group_stamps[packet_group] = _clock.msec();
 	}
 
+	u8 id = (u8)(block_count - 1);
+
 	// Add check symbol number
-	*(u16*)(buffer + 3) = getLE16(block_count - 1);
+	buffer[3] = id; // id of packet
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
 	// NOTE: This allows the decoder to know when it has received
 	// all the packets in a code group for the zero-loss case.
-	*(u16*)(buffer + 5) = getLE(block_count);
+	buffer[4] = id; // k - 1
+
+	CAT_DEBUG_ENFORCE(ORIGINAL_OVERHEAD == 5);
 
 	// Copy input data into place
 	memcpy(buffer + ORIGINAL_OVERHEAD, data, len);
 
 	// Transmit
-	_settings.interface->SendData(buffer, len + 7);
+	_settings.interface->SendData(buffer, len + ORIGINAL_OVERHEAD);
 }
 
 // Send an OOB packet, first byte is type code
@@ -1742,6 +1747,7 @@ void Shorthair::Tick() {
 // On packet received
 void Shorthair::Recv(void *pkt, int len) {
 	// If the header is not truncated,
+	CAT_DEBUG_ENFORCE(len >= 3);
 	if (len >= 3) {
 		// Read 16-bit sequence number from the front
 		u16 seq = getLE16(*(u16*)pkt);

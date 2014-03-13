@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -175,12 +175,12 @@ protected:
 	// From GroupFlags
 	virtual void OnGroupTimeout(const u8 group_code);
 
-	CAT_INLINE openGroup(CodeGroup *group, int code_group) {
+	CAT_INLINE void openGroup(CodeGroup *group, int code_group) {
 		group->Open(_clock.msec());
 		GroupFlags::SetOpen(code_group);
 	}
 
-	CAT_INLINE closeGroup(CodeGroup *group, int code_group) {
+	CAT_INLINE void closeGroup(CodeGroup *group, int code_group) {
 		group->Close(_allocator);
 		GroupFlags::SetDone(code_group);
 		GroupFlags::ResetOpen(code_group);

@@ -1,5 +1,5 @@
 /*
-	Copyright (c) 2013 Christopher A. Taylor.  All rights reserved.
+	Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
 	modification, are permitted provided that the following conditions are met:
@@ -375,15 +375,11 @@ public:
 	Packet *Queue(int len);
 
 	CAT_INLINE int GetCurrentCount() {
-		return _block_count;
+		return _original_count;
 	}
 
 	// Encode queued data into recovery blocks
 	void EncodeQueued(int recovery_count);
-
-	CAT_INLINE int GetRecoveryBlocksRemaining() {
-		return _recovery_count - _next_recovery_block;
-	}
 
 	int GenerateRecoveryBlock(u8 *buffer);
 };

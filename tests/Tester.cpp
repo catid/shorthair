@@ -37,7 +37,7 @@ public:
 		_next = 0;
 	}
 
-	void Accept(ZeroLossClient *client, const u8 *key, MersenneTwister *prng);
+	void Accept(ZeroLossClient *client, MersenneTwister *prng);
 	void Tick();
 };
 
@@ -91,12 +91,11 @@ void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	_client->_codec.Recv(buffer, bytes);
 }
 
-void ZeroLossServer::Accept(ZeroLossClient *client, const u8 *key, MersenneTwister *prng) {
+void ZeroLossServer::Accept(ZeroLossClient *client, MersenneTwister *prng) {
 	_client = client;
 	_prng = prng;
 
 	Settings settings;
-	settings.initiator = false;
 	settings.target_loss = 0.0001;
 	settings.min_loss = 0.03;
 	settings.max_loss = 0.5;
@@ -105,7 +104,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, const u8 *key, MersenneTwist
 	settings.max_data_size = 1350;
 	settings.interface = this;
 
-	_codec.Initialize(key, settings);
+	_codec.Initialize(settings);
 
 	_next = 0;
 }
@@ -175,7 +174,6 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 	_prng = prng;
 
 	Settings settings;
-	settings.initiator = true;
 	settings.target_loss = 0.0001;
 	settings.min_loss = 0.03;
 	settings.max_loss = 0.5;
@@ -184,11 +182,9 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 	settings.max_data_size = 1350;
 	settings.interface = this;
 
-	u8 key[SKEY_BYTES] = {0};
+	_codec.Initialize(settings);
 
-	_codec.Initialize(key, settings);
-
-	server->Accept(this, key, prng);
+	server->Accept(this, prng);
 }
 
 void ZeroLossClient::Tick() {

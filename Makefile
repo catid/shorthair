@@ -98,7 +98,7 @@ cauchy_256.o : longhair/src/cauchy_256.cpp
 # Shorthair objects
 
 Shorthair.o : shorthair/Shorthair.cpp
-	$(CCPP) $(CPFLAGS) -c shorthair/Shorthair.cpp
+	$(CCPP) $(CPFLAGS) -c src/Shorthair.cpp
 
 
 # Cleanup
