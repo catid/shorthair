@@ -138,6 +138,8 @@ private:
 	u32 _last_swap_time;
 	int _redundant_count, _redundant_sent;
 
+	Encoder _encoder;
+
 protected:
 	// Send a check symbol
 	bool SendCheckSymbol();
@@ -152,7 +154,7 @@ protected:
 	void UpdateLoss(u32 seen, u32 count);
 
 	// On receiving an out-of-band packet
-	void OnOOB(u8 code_group, u8 *pkt, int len);
+	void OnOOB(u8 *pkt, int len);
 
 private:
 	LossStatistics _stats;
@@ -167,7 +169,7 @@ protected:
 	void RecoverGroup(CodeGroup *group);
 
 	// On receiving a data packet
-	void OnData(u8 code_group, u8 *pkt, int len);
+	void OnData(u8 *pkt, int len);
 
 	// Send collected statistics
 	void SendPong(int code_group);

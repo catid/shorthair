@@ -19,7 +19,7 @@ LIBS =
 # Object files
 
 libcat_o = EndianNeutral.o Clock.o BitMath.o Enforcer.o \
-		   ReuseAllocator.o MemXOR.o SecureErase.o
+		   ReuseAllocator.o MemXOR.o MemSwap.o
 longhair_o = cauchy_256.o
 shorthair_o = Shorthair.o $(longhair_o)
 tester_o = Tester.o $(shorthair_o) $(libcat_o) MersenneTwister.o
@@ -41,8 +41,15 @@ debug : tester
 # tester executable
 
 tester : CFLAGS += -DCAT_CLOCK_EXTRA
-tester : $(tester_o)
+tester : clean $(tester_o)
 	$(CCPP) $(LIBS) -o tester $(tester_o)
+
+
+# Valgrind tester executable
+
+valgrind : debug
+	$(CCPP) $(LIBS) -o tester $(tester_o)
+	valgrind --dsymutil=yes ./tester
 
 
 # redundancy executable
@@ -97,7 +104,7 @@ cauchy_256.o : longhair/src/cauchy_256.cpp
 
 # Shorthair objects
 
-Shorthair.o : shorthair/Shorthair.cpp
+Shorthair.o : src/Shorthair.cpp
 	$(CCPP) $(CPFLAGS) -c src/Shorthair.cpp
 
 

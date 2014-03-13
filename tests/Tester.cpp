@@ -134,6 +134,7 @@ void ZeroLossServer::Tick() {
 		_codec.Send(buffer, len);
 	}
 
+	//cout << ">> Ticking server <<" << endl;
 	_codec.Tick();
 }
 
@@ -188,6 +189,7 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 }
 
 void ZeroLossClient::Tick() {
+	//cout << ">> Ticking client <<" << endl;
 	_codec.Tick();
 
 	cout << _received << " of " << _server->_sent << " : " << _received / (float)_server->_sent << endl;

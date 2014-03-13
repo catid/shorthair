@@ -76,7 +76,7 @@ static const int MIN_CODE_DURATION = 100; // Milliseconds
 
 // OOB Pong packet type
 static const u8 PONG_TYPE = 0xff;
-static const int PONG_SIZE = 1 + 4 + 4; // Does not include seqno and OOB byte: total = 12 bytes
+static const int PONG_SIZE = 1 + 1 + 4 + 4; // Includes OOB byte + type
 
 
 //// LossEstimator
