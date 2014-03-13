@@ -143,17 +143,20 @@ struct CodeGroup {
 	u32 open_time;
 
 	// Largest ID seen for each code group, for decoding the ID
-	u32 largest_id;
+	int largest_id;
 
 	// Largest seen data length
-	u16 largest_len;
+	int largest_len;
 
 	// Largest seen block count for each code group
-	u16 block_count;
+	int block_count;
+
+	// The number of recovery packets in the code group
+	int recovery_count;
 
 	// Received symbol counts
-	u16 original_seen;
-	u32 total_seen;
+	int original_seen;
+	int total_seen;
 
 	// Original symbols
 	Packet *head, *tail;
@@ -324,12 +327,13 @@ class Encoder {
 	int _original_count;	// Number of blocks of original data
 	int _recovery_count;	// Number of recovery blocks to generate
 	int _largest;			// Number of bytes max, excluding 2 byte implied length field
-
-	// Next block id to produce
-	u32 _next_block_id;
+	u8 *_data_ptrs[256];	// Pointers to data, used during encoding
 
 	// Large message buffer for code group
 	SmartArray<u8> _encode_buffer;
+
+	// Block index into encode buffer to send next
+	int _next_recovery_block;
 
 	CAT_INLINE void FreeGarbage() {
 		_allocator->ReleaseBatch(BatchSet(_head, _tail));
@@ -355,9 +359,13 @@ public:
 		return _block_count;
 	}
 
+	// Encode queued data into recovery blocks
 	void EncodeQueued(int recovery_count);
 
-	// Returns 0 if recovery blocks cannot be sent yet
+	CAT_INLINE int GetRecoveryBlocksRemaining() {
+		return _recovery_count - _next_recovery_block;
+	}
+
 	int GenerateRecoveryBlock(u8 *buffer);
 };
 

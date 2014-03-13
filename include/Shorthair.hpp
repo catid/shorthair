@@ -157,10 +157,6 @@ protected:
 private:
 	LossStatistics _stats;
 
-	// Is decoder active?
-	bool _decoding;
-	u8 _decoding_group;
-
 	// Next expected code group
 	u8 _last_group;
 
@@ -178,6 +174,17 @@ protected:
 
 	// From GroupFlags
 	virtual void OnGroupTimeout(const u8 group_code);
+
+	CAT_INLINE openGroup(CodeGroup *group, int code_group) {
+		group->Open(_clock.msec());
+		GroupFlags::SetOpen(code_group);
+	}
+
+	CAT_INLINE closeGroup(CodeGroup *group, int code_group) {
+		group->Close(_allocator);
+		GroupFlags::SetDone(code_group);
+		GroupFlags::ResetOpen(code_group);
+	}
 
 public:
 	CAT_INLINE Shorthair() {
