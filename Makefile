@@ -113,5 +113,6 @@ Shorthair.o : src/Shorthair.cpp
 .PHONY : clean
 
 clean :
+	git submodule update --init --recursive
 	-rm redtest tester *.o
 
