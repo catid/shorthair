@@ -7,7 +7,7 @@ using namespace shorthair;
 #include <iomanip>
 using namespace std;
 
-//#define SLOW_TESTER
+#define SLOW_TESTER
 
 #ifdef SLOW_TESTER
 #define TICK_RATE 150

@@ -1101,7 +1101,7 @@ void Encoder::EncodeQueued(int m) {
 }
 
 // Returns 0 if recovery blocks cannot be sent yet
-int Encoder::GenerateRecoveryBlock(u8 *buffer) {
+int Encoder::GenerateRecoveryBlock(u8 *pkt) {
 	const int block_bytes = _block_bytes;
 
 	//CAT_IF_DUMP(cout << "<< Generated recovery block id = " << _next_recovery_block << " block_bytes=" << _block_bytes << endl);
@@ -1111,9 +1111,9 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 		LOG("Writing k = 1 special form len=%d", block_bytes);
 
 		// Write special form
-		buffer[0] = 1;
-		buffer[1] = 0;
-		memcpy(buffer + 2, _buffer.get(), block_bytes);
+		pkt[0] = 1;
+		pkt[1] = 0;
+		memcpy(pkt + 2, _buffer.get(), block_bytes);
 
 		return 2 + block_bytes;
 	}
@@ -1126,14 +1126,14 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 	const int index = _next_recovery_block++;
 
 	// Write header
-	buffer[0] = (u8)(_k + index);
-	buffer[1] = (u8)(_k - 1);
-	buffer[2] = (u8)(_m - 1);
+	pkt[0] = (u8)(_k + index);
+	pkt[1] = (u8)(_k - 1);
+	pkt[2] = (u8)(_m - 1);
 
 	const u8 *src = _buffer.get() + block_bytes * index;
 
 	// Write data
-	memcpy(buffer + 3, src, block_bytes);
+	memcpy(pkt + 3, src, block_bytes);
 
 	// Return bytes written
 	return 3 + block_bytes;
@@ -1144,8 +1144,8 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 
 // Send a check symbol
 bool Shorthair::SendCheckSymbol() {
-	u8 *buffer = _sym_buffer.get();
-	int len = _encoder.GenerateRecoveryBlock(buffer + 3);
+	u8 *pkt = _sym_buffer.get();
+	int len = _encoder.GenerateRecoveryBlock(pkt + 3);
 
 	// If no data to send,
 	if (len <= 0) {
@@ -1154,13 +1154,13 @@ bool Shorthair::SendCheckSymbol() {
 	}
 
 	// Insert next sequence number
-	*(u16*)buffer = getLE16(_out_seq++);
+	*(u16*)pkt = getLE16(_out_seq++);
 
 	// Prepend the code group
-	buffer[2] = _code_group & 0x7f;
+	pkt[2] = _code_group & 0x7f;
 
 	// Transmit
-	_settings.interface->SendData(buffer, len + 3);
+	_settings.interface->SendData(pkt, len + 3);
 
 	return true;
 }
@@ -1312,6 +1312,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If packet contains original data,
 	if (id < block_count) {
+		LOG("~~ GOT id %d bc %d cg %d", id, block_count, (int)code_group);
 		// Process it immediately
 		_settings.interface->OnPacket(data, data_len);
 
