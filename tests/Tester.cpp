@@ -7,6 +7,16 @@ using namespace shorthair;
 #include <iomanip>
 using namespace std;
 
+#ifdef SLOW_TESTER
+#define TICK_RATE 150
+#define PKTS_PER_TICK 1
+#define VERBOSE(x) x
+#else
+#define TICK_RATE 10
+#define PKTS_PER_TICK 1
+#define VERBOSE(x)
+#endif
+
 
 //// ZeroLoss Classes
 
@@ -85,8 +95,11 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
 	if ((_prng->Generate() & 15) < 7) {
+		VERBOSE(cout << "RAWR PACKET LOSS -- Dropping packet with bytes = " << bytes << endl);
 		return;
 	}
+
+	VERBOSE(cout << "TESTER: RAW SEND DATA LEN = " << bytes << endl);
 
 	_client->_codec.Recv(buffer, bytes);
 }
@@ -116,13 +129,15 @@ void ZeroLossServer::Tick() {
 	u8 buffer[MAX_SIZE] = {0};
 
 	// >10 "MBPS" if packet payload is 1350 bytes
-	for (int ii = 0; ii < 1; ++ii) {
+	for (int ii = 0; ii < PKTS_PER_TICK; ++ii) {
 		MersenneTwister prng;
 		prng.Initialize(_next);
 
-		*(u32*)buffer = _next++;
-
 		int len = _prng->GenerateUnbiased(4 + 4, MAX_SIZE);
+
+		VERBOSE(cout << "TESTER: SENDING PACKET " << _next << " with len = " << len << endl);
+
+		*(u32*)buffer = _next++;
 
 		*(u32*)(buffer + 4) = len;
 
@@ -147,6 +162,8 @@ void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 
 	u32 id = *(u32*)packet;
 	u32 len = *(u32*)(packet + 4);
+
+	VERBOSE(cout << "TESTER: ON PACKET " << id << " with len = " << len << endl);
 
 	CAT_ENFORCE(bytes == len);
 
@@ -211,11 +228,11 @@ void ZeroLossTest() {
 	// Simulate connection start
 	client.Connect(&server, &prng);
 
-	for (;;) {
-		// Wait 10 ms
-		Clock::sleep(10);
+	static const int SLEEP_TIME = TICK_RATE; // milliseconds
 
-		// Tick at ~10 ms rate
+	for (;;) {
+		Clock::sleep(SLEEP_TIME);
+
 		client.Tick();
 		server.Tick();
 	}

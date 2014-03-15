@@ -1034,12 +1034,13 @@ Packet *Encoder::Queue(int len) {
 	_tail = p;
 
 	_original_count++;
-	// NOTE: Not all block sizes are supported and some data may be dropped
 
 	return p;
 }
 
 void Encoder::EncodeQueued(int m) {
+	CAT_IF_DUMP(cout << "** Started encoding m=" << m << " and k=" << _original_count << " largest bytes=" << _largest << endl);
+
 	// Abort if input is invalid
 	CAT_DEBUG_ENFORCE(m > 0);
 	if (m < 1) {
@@ -1061,15 +1062,18 @@ void Encoder::EncodeQueued(int m) {
 
 	// Optimization: If k = 1,
 	if (k == 1) {
+		int len = _largest;
+
+		CAT_IF_DUMP(cout << "Encoding queued k = 1 special case len=" << _largest << endl);
 		CAT_DEBUG_ENFORCE(_head != 0);
-		CAT_DEBUG_ENFORCE(_head->len == _largest);
+		CAT_DEBUG_ENFORCE(_head->len == len);
 
 		_k = 1; // Treated specially during generation
-		_block_bytes = _largest;
+		_block_bytes = len;
 
-		_buffer.resize(_largest);
+		_buffer.resize(len);
 
-		memcpy(_buffer.get(), _head->data, _block_bytes);
+		memcpy(_buffer.get(), _head->data + ORIGINAL_OVERHEAD, len);
 	} else {
 		CAT_DEBUG_ENFORCE(_largest > 0);
 
@@ -1128,8 +1132,12 @@ void Encoder::EncodeQueued(int m) {
 int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 	const int block_bytes = _block_bytes;
 
+	//CAT_IF_DUMP(cout << "<< Generated recovery block id = " << _next_recovery_block << " block_bytes=" << _block_bytes << endl);
+
 	// Optimization: If k = 1,
 	if (_k == 1) {
+		CAT_IF_DUMP(cout << "Writing k=1 special form 1,0,block_bytes=" << block_bytes << endl);
+
 		// Write special form
 		buffer[0] = 1;
 		buffer[1] = 0;
@@ -1383,18 +1391,16 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->original_seen++;
 	} else {
 		if (group->original_seen >= block_count) {
-			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
+			CAT_IF_DUMP(cout << "ALL ORIGINAL RECEIVE : " << (int)code_group << endl;)
 
 			// See above: Original data gets processed immediately
 			closeGroup(group, code_group);
 			return;
 		} else if (block_count == 1) {
-			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << " data_len = " << data_len << endl;)
 
-			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
+			CAT_DEBUG_ENFORCE(group->original_seen == 0);
 
-			// NOTE: In this special case all recovery packets are the same
-			// as the original packet: 00 00 data...
 			_settings.interface->OnPacket(data, data_len);
 
 			closeGroup(group, code_group);
@@ -1663,7 +1669,7 @@ void Shorthair::Tick() {
 			// Encode queued data now
 			_encoder.EncodeQueued(_redundant_count);
 
-			CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
+			CAT_IF_DUMP(cout << "New code group " << (int)_code_group << ": N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
 		} else {
 			CAT_IF_DUMP(cout << "Attempted to open a new code group with no data" << endl);
 		}
