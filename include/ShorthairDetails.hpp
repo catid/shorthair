@@ -342,7 +342,7 @@ public:
 	void Finalize();
 
 	// Add an original packet
-	Packet *Queue(int len);
+	void Queue(Packet *p);
 
 	CAT_INLINE int GetCurrentCount() {
 		return _original_count;

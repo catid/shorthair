@@ -6,8 +6,8 @@
 #OPTFLAGS = -O3 -fomit-frame-pointer -funroll-loops
 CCPP = clang++
 CC = clang
-OPTFLAGS = -O4
-DBGFLAGS = -g -O0 -DDEBUG
+OPTFLAGS = -O4 -DCAT_THREADED_ALLOCATOR
+DBGFLAGS = -g -O0 -DDEBUG -DCAT_THREADED_ALLOCATOR
 CFLAGS = -Wall -fstrict-aliasing -I ./libcat -I ./longhair/include -I ./include
 CPFLAGS = $(CFLAGS)
 LIBS =
@@ -16,7 +16,7 @@ LIBS =
 # Object files
 
 libcat_o = EndianNeutral.o Clock.o BitMath.o Enforcer.o \
-		   ReuseAllocator.o MemXOR.o MemSwap.o
+		   ReuseAllocator.o MemXOR.o MemSwap.o Mutex.o
 longhair_o = cauchy_256.o
 shorthair_o = Shorthair.o $(longhair_o)
 tester_o = Tester.o $(shorthair_o) $(libcat_o) MersenneTwister.o SecureEqual.o
@@ -78,6 +78,9 @@ BitMath.o : libcat/BitMath.cpp
 
 MemXOR.o : libcat/MemXOR.cpp
 	$(CCPP) $(CFLAGS) -c libcat/MemXOR.cpp
+
+Mutex.o : libcat/Mutex.cpp
+	$(CCPP) $(CFLAGS) -c libcat/Mutex.cpp
 
 MemSwap.o : libcat/MemSwap.cpp
 	$(CCPP) $(CFLAGS) -c libcat/MemSwap.cpp

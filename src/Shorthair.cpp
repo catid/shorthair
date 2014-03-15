@@ -29,6 +29,7 @@
 #include "Shorthair.hpp"
 #include "EndianNeutral.hpp"
 #include "BitMath.hpp"
+#include "Mutex.hpp"
 using namespace cat;
 using namespace shorthair;
 
@@ -48,6 +49,8 @@ using namespace shorthair;
 #include <cmath>
 #include <vector>
 using namespace std;
+
+static Mutex m_mutex;
 
 
 /*
@@ -968,13 +971,12 @@ void Encoder::Finalize() {
 	}
 }
 
-Packet *Encoder::Queue(int len) {
+void Encoder::Queue(Packet *p) {
+	int len = p->len;
+
 	CAT_ENFORCE(len > 0);
 
-	// Allocate sent packet buffer
-	Packet *p = _allocator->AcquireObject<Packet>();
-	p->batch_next = 0;
-	p->len = len;
+	AutoMutex guard(m_mutex);
 
 	// If this new packet is larger than the previous ones,
 	if (_largest < len) {
@@ -991,11 +993,11 @@ Packet *Encoder::Queue(int len) {
 	_tail = p;
 
 	_original_count++;
-
-	return p;
 }
 
 void Encoder::EncodeQueued(int m) {
+	AutoMutex guard(m_mutex);
+
 	LOG("** Started encoding m=%d and k=%d largest bytes=%d", m, _original_count, _largest);
 
 	// Abort if input is invalid
@@ -1142,7 +1144,7 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 
 // Send a check symbol
 bool Shorthair::SendCheckSymbol() {
-	u8 *buffer = _packet_buffer.get();
+	u8 *buffer = _sym_buffer.get();
 	int len = _encoder.GenerateRecoveryBlock(buffer + 3);
 
 	// If no data to send,
@@ -1409,7 +1411,8 @@ bool Shorthair::Initialize(const Settings &settings) {
 	const int buffer_size = SHORTHAIR_OVERHEAD + _settings.max_data_size;
 
 	// Allocate recovery packet workspace
-	_packet_buffer.resize(buffer_size);
+	_sym_buffer.resize(buffer_size);
+	_oob_buffer.resize(buffer_size);
 
 	// Initialize packet storage buffer allocator
 	_allocator.Initialize(sizeof(Packet) - 1 + buffer_size);
@@ -1457,7 +1460,11 @@ void Shorthair::Finalize() {
 void Shorthair::Send(const void *data, int len) {
 	CAT_ENFORCE(len <= _settings.max_data_size);
 
-	Packet *p = _encoder.Queue(len);
+	// Allocate sent packet buffer
+	Packet *p = _allocator.AcquireObject<Packet>();
+	p->batch_next = 0;
+	p->len = len;
+
 	u8 *pkt = p->data;
 	int pkt_len = len + ORIGINAL_OVERHEAD;
 
@@ -1501,14 +1508,17 @@ void Shorthair::Send(const void *data, int len) {
 
 	// Transmit
 	_settings.interface->SendData(p->data, pkt_len);
+
+	// Queue after sending to avoid lock latency
+	_encoder.Queue(p);
 }
 
 // Send an OOB packet, first byte is type code
 void Shorthair::SendOOB(const u8 *data, int len) {
 	CAT_ENFORCE(len > 0);
-	CAT_ENFORCE(1 + len <= _packet_buffer.size())
+	CAT_ENFORCE(1 + len <= _oob_buffer.size());
 
-	u8 *pkt = _packet_buffer.get();
+	u8 *pkt = _oob_buffer.get();
 	u8 *pkt_front = pkt;
 	int pkt_len = len + 3;
 
@@ -1554,7 +1564,7 @@ void Shorthair::Tick() {
 
 		// If stats still not sent from last time,
 		if (_send_stats) {
-			u8 *pkt = _packet_buffer.get();
+			u8 pkt[11];
 
 			// Insert sequence number at the front
 			*(u16*)pkt = getLE16(_out_seq++);
