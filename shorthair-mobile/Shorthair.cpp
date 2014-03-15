@@ -32,21 +32,22 @@
 using namespace cat;
 using namespace shorthair;
 
+//#define CAT_DUMP_SHORTHAIR
+
+#if !defined(CAT_DUMP_SHORTHAIR)
+#define LOG(fmt, ...)
+#else
+#ifdef CAT_OS_ANDROID
+#include <android/log.h>
+#define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shorthair", fmt, __VA_ARGS__);
+#else
+#define LOG(fmt, ...) printf("{shorthair}" fmt "\r\n", __VA_ARGS__);
+#endif
+#endif
+
 #include <cmath>
 #include <vector>
 using namespace std;
-
-#ifdef CAT_DUMP_SHORTHAIR
-#include <iostream>
-#include <iomanip>
-using namespace std;
-#endif
-
-#if defined(CAT_DUMP_SHORTHAIR)
-#define CAT_IF_DUMP(x) x
-#else
-#define CAT_IF_DUMP(x)
-#endif
 
 
 /*
@@ -995,7 +996,7 @@ Packet *Encoder::Queue(int len) {
 }
 
 void Encoder::EncodeQueued(int m) {
-	CAT_IF_DUMP(cout << "** Started encoding m=" << m << " and k=" << _original_count << " largest bytes=" << _largest << endl);
+	LOG("** Started encoding m=%d and k=%d largest bytes=%d", m, _original_count, _largest);
 
 	// Abort if input is invalid
 	CAT_DEBUG_ENFORCE(m > 0);
@@ -1020,7 +1021,7 @@ void Encoder::EncodeQueued(int m) {
 	if (k == 1) {
 		int len = _largest;
 
-		CAT_IF_DUMP(cout << "Encoding queued k = 1 special case len=" << _largest << endl);
+		LOG("Encoding queued k = 1 special case len=%d", _largest);
 		CAT_DEBUG_ENFORCE(_head != 0);
 		CAT_DEBUG_ENFORCE(_head->len == len);
 
@@ -1070,6 +1071,8 @@ void Encoder::EncodeQueued(int m) {
 			CAT_CLR(pkt + len + 2, block_size - (len + 2));
 		}
 
+		CAT_DEBUG_ENFORCE(index == k);
+
 		// Set up encode buffer to receive the recovery blocks
 		_buffer.resize(m * block_size);
 
@@ -1103,7 +1106,7 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 
 	// Optimization: If k = 1,
 	if (_k == 1) {
-		CAT_IF_DUMP(cout << "Writing k=1 special form 1,0,block_bytes=" << block_bytes << endl);
+		LOG("Writing k = 1 special form len=%d", block_bytes);
 
 		// Write special form
 		buffer[0] = 1;
@@ -1184,7 +1187,7 @@ void Shorthair::OnOOB(u8 flags, u8 *pkt, int len) {
 		u32 count = getLE(*(u32*)(pkt + 4));
 		UpdateLoss(seen, count);
 
-		CAT_IF_DUMP(cout << "++ Updating loss stats from OOB header: " << seen << " / " << count << endl);
+		LOG("++ Updating loss stats from OOB header: %d / %d", seen, count);
 
 		pkt += 8;
 		len -= 8;
@@ -1197,7 +1200,7 @@ void Shorthair::OnOOB(u8 flags, u8 *pkt, int len) {
 			OnData(pkt, len);
 		}
 	} else {
-		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[0] << endl);
+		LOG("Delivering OOB data of length %d and type = %d", len, (int)pkt[0]);
 
 		// Pass OOB data to the interface
 		_settings.interface->OnOOB(pkt, len);
@@ -1247,7 +1250,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 	CAT_DEBUG_ENFORCE(k + m <= 256);
 	CAT_DEBUG_ENFORCE(index == k);
 
-	CAT_IF_DUMP(cout << "CRS decode with k=" << k << ", m=" << m << " block_size=" << block_size << " #originals=" << group->original_seen << endl);
+	LOG("CRS decode with k=%d, m=%d block_size=%d, #originals=%d", k, m, block_size, group->original_seen);
 
 	// Decode the data
 	CAT_ENFORCE(0 == cauchy_256_decode(k, m, blocks, block_size));
@@ -1287,7 +1290,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	if (!group->open) {
 		openGroup(group, code_group);
 
-		CAT_IF_DUMP(cout << "~~~~~~~~~~~~~~~~~~~~~ OPENING GROUP " << (int)code_group << endl;)
+		LOG("~~ Opening group %d", (int)code_group);
 	}
 
 	int id = (u32)pkt[1];
@@ -1314,13 +1317,13 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->original_seen++;
 	} else {
 		if (group->original_seen >= block_count) {
-			CAT_IF_DUMP(cout << "ALL ORIGINAL RECEIVE : " << (int)code_group << endl;)
+			LOG("~~ Closing group %d: Just noticed all originals are received", (int)code_group);
 
 			// See above: Original data gets processed immediately
 			closeGroup(group, code_group);
 			return;
 		} else if (block_count == 1) {
-			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << " data_len = " << data_len << endl;)
+			LOG("~~ Closing group %d: Special case k = 1 and a redundant packet won", (int)code_group);
 
 			CAT_DEBUG_ENFORCE(group->original_seen == 0);
 
@@ -1372,7 +1375,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If recovery is now possible for this group,
 	if (group->CanRecover()) {
-		CAT_IF_DUMP(cout << "CAN RECOVER : " << (int)code_group << " : " << id << " < " << block_count << endl);
+		LOG("~~ Closing group %d: Recovered!", (int)code_group);
 
 		RecoverGroup(group);
 
@@ -1384,7 +1387,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 }
 
 void Shorthair::OnGroupTimeout(const u8 group) {
-	CAT_IF_DUMP(cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;)
+	LOG("~~ Closing group %d: Timeout", (int)group);
 	_groups[group].Close(_allocator);
 }
 
@@ -1465,8 +1468,6 @@ void Shorthair::Send(const void *data, int len) {
 	if (_send_stats) {
 		_send_stats = false;
 
-		CAT_IF_DUMP(cout << "Attaching statistics to outgoing message!" << endl);
-
 		// Attach stats to the front
 		pkt[2] = 0x81;
 		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
@@ -1518,8 +1519,6 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 	if (_send_stats) {
 		_send_stats = false;
 
-		CAT_IF_DUMP(cout << "Attaching statistics to outgoing OOB message!" << endl);
-
 		// Attach stats to the front
 		pkt[2] = 0x81;
 		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
@@ -1563,8 +1562,6 @@ void Shorthair::Tick() {
 			pkt[2] = 0x81;
 			*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
 			*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
-
-			CAT_IF_DUMP(cout << "Sending stats alone" << endl);
 
 			// Transmit
 			_settings.interface->SendData(pkt, 11);
@@ -1618,12 +1615,10 @@ void Shorthair::Tick() {
 
 			// NOTE: These packets will be spread out over the swap interval
 
+			LOG("New code group %d: N = %d R = %d loss=%f[acted on %f]", (int)_code_group, N, _redundant_count, _loss.GetReal(), _loss.GetClamped());
+
 			// Encode queued data now
 			_encoder.EncodeQueued(_redundant_count);
-
-			CAT_IF_DUMP(cout << "New code group " << (int)_code_group << ": N = " << N << " R = " << _redundant_count << " loss=" << _loss.GetReal() << endl);
-		} else {
-			CAT_IF_DUMP(cout << "Attempted to open a new code group with no data" << endl);
 		}
 	}
 }
