@@ -198,11 +198,11 @@ public:
 	}
 
 	CAT_INLINE float GetLoss() {
-		return _loss.Get();
+		return _loss.GetReal();
 	}
 
 	CAT_INLINE int GetDelay() {
-		return _delay.Get();
+		return _delay.GetReal();
 	}
 
 	// On startup:

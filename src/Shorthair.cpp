@@ -746,7 +746,8 @@ void LossEstimator::Initialize(float min_loss, float max_loss) {
 	_count = 0;
 	_min_loss = min_loss;
 	_max_loss = max_loss;
-	_loss = min_loss;
+	_real_loss = 0;
+	_clamped_loss = min_loss;
 }
 
 void LossEstimator::Insert(u32 seen, u32 count) {
@@ -775,17 +776,20 @@ void LossEstimator::Calculate() {
 	}
 
 	if (count > 0) {
-		_loss = (float)((count - seen) / (double)count);
+		float loss = (float)((count - seen) / (double)count);
+		_real_loss = loss;
 
 		// Clamp value
-		if (_loss < _min_loss) {
-			_loss = _min_loss;
+		if (loss < _min_loss) {
+			loss = _min_loss;
+		} else if (loss > _max_loss) {
+			loss = _max_loss;
 		}
-		if (_loss > _max_loss) {
-			_loss = _max_loss;
-		}
+
+		_clamped_loss = loss;
 	} else {
-		_loss = _min_loss;
+		_real_loss = 0;
+		_clamped_loss = _min_loss;
 	}
 
 	// TODO: Validate that this is a good predictor
@@ -799,7 +803,8 @@ void DelayEstimator::Initialize(int min_delay, int max_delay) {
 	_count = 0;
 	_min_delay = min_delay;
 	_max_delay = max_delay;
-	_delay = min_delay;
+	_real_delay = min_delay;
+	_clamped_delay = min_delay;
 }
 
 void DelayEstimator::Insert(int delay) {
@@ -827,13 +832,16 @@ void DelayEstimator::Calculate() {
 		sum += delay;
 	}
 
-	_delay = (int)(sum / len);
+	int delay = (int)(sum / len);
+	_real_delay = delay;
 
-	if (_delay < _min_delay) {
-		_delay = _min_delay;
-	} else if (_delay > _max_delay) {
-		_delay = _max_delay;
+	if (delay < _min_delay) {
+		delay = _min_delay;
+	} else if (delay > _max_delay) {
+		delay = _max_delay;
 	}
+
+	_clamped_delay = delay;
 
 	// TODO: Validate that this is a good predictor
 }
@@ -1195,7 +1203,7 @@ bool Shorthair::SendCheckSymbol() {
 
 // Calculate interval from delay
 void Shorthair::CalculateInterval() {
-	int delay = _delay.Get();
+	int delay = _delay.GetClamped();
 
 	// From previous work: Ideal buffer size = delay + swap interval * 2
 
@@ -1658,7 +1666,7 @@ void Shorthair::Tick() {
 
 		if (N > 0) {
 			// Calculate number of redundant packets to send this time
-			_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
+			_redundant_count = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
 			_redundant_sent = 0;
 
 			// Select next code group
