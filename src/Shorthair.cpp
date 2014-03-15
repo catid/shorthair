@@ -746,7 +746,8 @@ void LossEstimator::Initialize(float min_loss, float max_loss) {
 	_count = 0;
 	_min_loss = min_loss;
 	_max_loss = max_loss;
-	_loss = min_loss;
+	_real_loss = 0;
+	_clamped_loss = min_loss;
 }
 
 void LossEstimator::Insert(u32 seen, u32 count) {
@@ -775,17 +776,20 @@ void LossEstimator::Calculate() {
 	}
 
 	if (count > 0) {
-		_loss = (float)((count - seen) / (double)count);
+		float loss = (float)((count - seen) / (double)count);
+		_real_loss = loss;
 
 		// Clamp value
-		if (_loss < _min_loss) {
-			_loss = _min_loss;
+		if (loss < _min_loss) {
+			loss = _min_loss;
+		} else if (loss > _max_loss) {
+			loss = _max_loss;
 		}
-		if (_loss > _max_loss) {
-			_loss = _max_loss;
-		}
+
+		_clamped_loss = loss;
 	} else {
-		_loss = _min_loss;
+		_real_loss = 0;
+		_clamped_loss = _min_loss;
 	}
 
 	// TODO: Validate that this is a good predictor
@@ -1552,7 +1556,7 @@ void Shorthair::Tick() {
 
 		if (N > 0) {
 			// Calculate number of redundant packets to send this time
-			_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
+			_redundant_count = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
 			_redundant_sent = 0;
 
 			// Select next code group

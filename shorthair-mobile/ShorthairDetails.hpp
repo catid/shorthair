@@ -88,14 +88,11 @@ class LossEstimator {
 	} _bins[BINS];
 	int _count, _index;
 
-	// Minimum allowed loss estimate
-	float _min_loss;
+	// Clamp values
+	float _min_loss, _max_loss;
 
-	// Maximum allowed loss estimate
-	float _max_loss;
-
-	// Final massaged value:
-	float _loss;
+	// Resulting values
+	float _real_loss, _clamped_loss;
 
 public:
 	void Initialize(float min_loss, float max_loss);
@@ -105,8 +102,12 @@ public:
 	// Pick estimated loss based on history
 	void Calculate();
 
-	CAT_INLINE float Get() {
-		return _loss;
+	CAT_INLINE float GetReal() {
+		return _real_loss;
+	}
+
+	CAT_INLINE float GetClamped() {
+		return _clamped_loss;
 	}
 };
 
@@ -123,8 +124,8 @@ class DelayEstimator {
 	// Clamp values
 	int _min_delay, _max_delay;
 
-	// Final massaged value:
-	int _delay;
+	// Resulting values
+	int _real_delay, _clamped_delay;
 
 public:
 	void Initialize(int min_delay, int max_delay);
@@ -134,8 +135,12 @@ public:
 	// Pick estimated upper-bound on one-way s2c delay based on history
 	void Calculate();
 
-	CAT_INLINE int Get() {
-		return _delay;
+	CAT_INLINE int GetReal() {
+		return _real_delay;
+	}
+
+	CAT_INLINE int GetClamped() {
+		return _clamped_delay;
 	}
 };
 
