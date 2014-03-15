@@ -746,7 +746,8 @@ void LossEstimator::Initialize(float min_loss, float max_loss) {
 	_count = 0;
 	_min_loss = min_loss;
 	_max_loss = max_loss;
-	_loss = min_loss;
+	_real_loss = 0;
+	_clamped_loss = min_loss;
 }
 
 void LossEstimator::Insert(u32 seen, u32 count) {
@@ -775,17 +776,20 @@ void LossEstimator::Calculate() {
 	}
 
 	if (count > 0) {
-		_loss = (float)((count - seen) / (double)count);
+		float loss = (float)((count - seen) / (double)count);
+		_real_loss = loss;
 
 		// Clamp value
-		if (_loss < _min_loss) {
-			_loss = _min_loss;
+		if (loss < _min_loss) {
+			loss = _min_loss;
+		} else if (loss > _max_loss) {
+			loss = _max_loss;
 		}
-		if (_loss > _max_loss) {
-			_loss = _max_loss;
-		}
+
+		_clamped_loss = loss;
 	} else {
-		_loss = _min_loss;
+		_real_loss = 0;
+		_clamped_loss = _min_loss;
 	}
 
 	// TODO: Validate that this is a good predictor
@@ -799,7 +803,8 @@ void DelayEstimator::Initialize(int min_delay, int max_delay) {
 	_count = 0;
 	_min_delay = min_delay;
 	_max_delay = max_delay;
-	_delay = min_delay;
+	_real_delay = min_delay;
+	_clamped_delay = min_delay;
 }
 
 void DelayEstimator::Insert(int delay) {
@@ -827,13 +832,16 @@ void DelayEstimator::Calculate() {
 		sum += delay;
 	}
 
-	_delay = (int)(sum / len);
+	int delay = (int)(sum / len);
+	_real_delay = delay;
 
-	if (_delay < _min_delay) {
-		_delay = _min_delay;
-	} else if (_delay > _max_delay) {
-		_delay = _max_delay;
+	if (delay < _min_delay) {
+		delay = _min_delay;
+	} else if (delay > _max_delay) {
+		delay = _max_delay;
 	}
+
+	_clamped_delay = delay;
 
 	// TODO: Validate that this is a good predictor
 }
@@ -1034,12 +1042,13 @@ Packet *Encoder::Queue(int len) {
 	_tail = p;
 
 	_original_count++;
-	// NOTE: Not all block sizes are supported and some data may be dropped
 
 	return p;
 }
 
 void Encoder::EncodeQueued(int m) {
+	CAT_IF_DUMP(cout << "** Started encoding m=" << m << " and k=" << _original_count << " largest bytes=" << _largest << endl);
+
 	// Abort if input is invalid
 	CAT_DEBUG_ENFORCE(m > 0);
 	if (m < 1) {
@@ -1061,15 +1070,18 @@ void Encoder::EncodeQueued(int m) {
 
 	// Optimization: If k = 1,
 	if (k == 1) {
+		int len = _largest;
+
+		CAT_IF_DUMP(cout << "Encoding queued k = 1 special case len=" << _largest << endl);
 		CAT_DEBUG_ENFORCE(_head != 0);
-		CAT_DEBUG_ENFORCE(_head->len == _largest);
+		CAT_DEBUG_ENFORCE(_head->len == len);
 
 		_k = 1; // Treated specially during generation
-		_block_bytes = _largest;
+		_block_bytes = len;
 
-		_buffer.resize(_largest);
+		_buffer.resize(len);
 
-		memcpy(_buffer.get(), _head->data, _block_bytes);
+		memcpy(_buffer.get(), _head->data + ORIGINAL_OVERHEAD, len);
 	} else {
 		CAT_DEBUG_ENFORCE(_largest > 0);
 
@@ -1128,10 +1140,14 @@ void Encoder::EncodeQueued(int m) {
 int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 	const int block_bytes = _block_bytes;
 
+	//CAT_IF_DUMP(cout << "<< Generated recovery block id = " << _next_recovery_block << " block_bytes=" << _block_bytes << endl);
+
 	// Optimization: If k = 1,
 	if (_k == 1) {
+		CAT_IF_DUMP(cout << "Writing k=1 special form 1,0,block_bytes=" << block_bytes << endl);
+
 		// Write special form
-		buffer[0] = 0;
+		buffer[0] = 1;
 		buffer[1] = 0;
 		memcpy(buffer + 2, _buffer.get(), block_bytes);
 
@@ -1187,7 +1203,7 @@ bool Shorthair::SendCheckSymbol() {
 
 // Calculate interval from delay
 void Shorthair::CalculateInterval() {
-	int delay = _delay.Get();
+	int delay = _delay.GetClamped();
 
 	// From previous work: Ideal buffer size = delay + swap interval * 2
 
@@ -1263,7 +1279,7 @@ void Shorthair::OnOOB(u8 *pkt, int len) {
 		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[1] << endl);
 
 		// Pass unrecognized OOB data to the interface
-		_settings.interface->OnOOB(pkt, len);
+		_settings.interface->OnOOB(pkt + 1, len - 1);
 	}
 }
 
@@ -1382,6 +1398,23 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Increment original seen count
 		group->original_seen++;
 	} else {
+		if (group->original_seen >= block_count) {
+			CAT_IF_DUMP(cout << "ALL ORIGINAL RECEIVE : " << (int)code_group << endl;)
+
+			// See above: Original data gets processed immediately
+			closeGroup(group, code_group);
+			return;
+		} else if (block_count == 1) {
+			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << " data_len = " << data_len << endl;)
+
+			CAT_DEBUG_ENFORCE(group->original_seen == 0);
+
+			_settings.interface->OnPacket(data, data_len);
+
+			closeGroup(group, code_group);
+			return;
+		}
+
 		// If ID is the largest seen so far,
 		if (id > group->largest_id) {
 			// Update largest seen ID for decoding ID in next packet
@@ -1391,32 +1424,6 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Pull in codec parameters
 		group->largest_len = data_len - 1;
 		group->recovery_count = (u32)pkt[3] + 1;
-	}
-
-	// If we know how many blocks to expect,
-	if (group->largest_id >= block_count) {
-		// If we have received all original data without loss, (common case)
-		if (group->original_seen >= block_count) {
-			CAT_IF_DUMP(cout << "ALL RECEIVE : " << (int)code_group << endl;)
-
-			// See above: Original data gets processed immediately
-			closeGroup(group, code_group);
-			return;
-		}
-
-		// Optimization: If block count is special case 1,
-		if (block_count == 1) {
-			CAT_IF_DUMP(cout << "ONE RECEIVE : " << (int)code_group << endl;)
-
-			CAT_DEBUG_ENFORCE(group->original_seen < block_count);
-
-			// NOTE: In this special case all recovery packets are the same
-			// as the original packet: 00 00 data...
-			_settings.interface->OnPacket(data, data_len);
-
-			closeGroup(group, code_group);
-			return;
-		}
 	}
 
 	// Packet that will contain this data
@@ -1659,7 +1666,7 @@ void Shorthair::Tick() {
 
 		if (N > 0) {
 			// Calculate number of redundant packets to send this time
-			_redundant_count = CalculateRedundancy(_loss.Get(), N, _settings.target_loss);
+			_redundant_count = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
 			_redundant_sent = 0;
 
 			// Select next code group
@@ -1670,7 +1677,7 @@ void Shorthair::Tick() {
 			// Encode queued data now
 			_encoder.EncodeQueued(_redundant_count);
 
-			CAT_IF_DUMP(cout << "New code group: N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
+			CAT_IF_DUMP(cout << "New code group " << (int)_code_group << ": N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
 		} else {
 			CAT_IF_DUMP(cout << "Attempted to open a new code group with no data" << endl);
 		}
