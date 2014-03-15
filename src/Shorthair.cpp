@@ -41,7 +41,7 @@ using namespace shorthair;
 #include <android/log.h>
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shorthair", fmt, __VA_ARGS__);
 #else
-#define LOG(fmt, ...) printf("{shorthair}" ## fmt ## "\r\n", __VA_ARGS__);
+#define LOG(fmt, ...) printf("{shorthair}" fmt "\r\n", __VA_ARGS__);
 #endif
 #endif
 
