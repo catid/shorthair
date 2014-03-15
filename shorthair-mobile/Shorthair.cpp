@@ -800,7 +800,6 @@ void LossEstimator::Calculate() {
 
 void CodeGroup::Open(u32 ms) {
 	open = true;
-	open_time = ms;
 	largest_id = 0;
 	block_count = 0;
 	original_seen = 0;
@@ -1030,7 +1029,13 @@ void Encoder::EncodeQueued(int m) {
 
 		_buffer.resize(len);
 
-		memcpy(_buffer.get(), _head->data + ORIGINAL_OVERHEAD, len);
+		// Correct for packet that has stats attached
+		u8 *pkt = _head->data;
+		if (pkt[2] == 0x81) {
+			pkt += 9;
+		}
+
+		memcpy(_buffer.get(), pkt + ORIGINAL_OVERHEAD, len);
 	} else {
 		CAT_DEBUG_ENFORCE(_largest > 0);
 
@@ -1047,17 +1052,22 @@ void Encoder::EncodeQueued(int m) {
 
 		// Massage data for use in codec
 		for (Packet *p = _head; index < k && p; p = (Packet*)p->batch_next, ++index) {
-			u8 *buffer = p->data + ORIGINAL_OVERHEAD - 2;
+			u8 *pkt = p->data + ORIGINAL_OVERHEAD - 2;
 			u16 len = p->len;
 
+			// Correct for packet that has stats attached
+			if (pkt[-1] == 0x81) {
+				pkt += 9;
+			}
+
 			// Setup data pointer
-			data_ptrs[index] = buffer;
+			data_ptrs[index] = pkt;
 
 			// Prefix data by its length
-			*(u16*)buffer = getLE16(len);
+			*(u16*)pkt = getLE16(len);
 
 			// Pad message up to the block size with zeroes
-			CAT_CLR(buffer + len + 2, block_size - (len + 2));
+			CAT_CLR(pkt + len + 2, block_size - (len + 2));
 		}
 
 		// Set up encode buffer to receive the recovery blocks
@@ -1160,26 +1170,36 @@ void Shorthair::UpdateLoss(u32 seen, u32 count) {
 	}
 }
 
-void Shorthair::OnOOB(u8 *pkt, int len) {
-	// If truncated,
-	CAT_DEBUG_ENFORCE(len > 1);
-	if (len < 1) {
-		// Ignore empty OOB packets
-		return;
-	}
+void Shorthair::OnOOB(u8 flags, u8 *pkt, int len) {
+	// If it contains a pong message,
+	if (flags & 1) {
+		// If truncated,
+		CAT_DEBUG_ENFORCE(len >= 8);
+		if (len < 8) {
+			return;
+		}
 
-	// If it is a pong,
-	if (len == PONG_SIZE && pkt[0] == PONG_TYPE) {
-		u32 seen = getLE(*(u32*)(pkt + 1));
-		u32 count = getLE(*(u32*)(pkt + 1 + 4));
-
+		// Update stats
+		u32 seen = getLE(*(u32*)pkt);
+		u32 count = getLE(*(u32*)(pkt + 4));
 		UpdateLoss(seen, count);
 
-		CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _settings.max_delay << endl);
+		CAT_IF_DUMP(cout << "++ Updating loss stats from OOB header: " << seen << " / " << count << endl);
+
+		pkt += 8;
+		len -= 8;
+
+		// If out of band,
+		if (pkt[0] & 0x80) {
+			OnOOB(0, pkt + 1, len - 1);
+			// NOTE: Does not allow attacker to cause more recursion
+		} else {
+			OnData(pkt, len);
+		}
 	} else {
 		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[0] << endl);
 
-		// Pass unrecognized OOB data to the interface
+		// Pass OOB data to the interface
 		_settings.interface->OnOOB(pkt, len);
 	}
 }
@@ -1285,12 +1305,6 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		group->block_count = block_count;
 	}
 
-	// Pong first packet of each group as fast as possible
-	// TODO: This is probably sending too much data in a lot of cases
-	if (id == 0) {
-		SendPong(code_group);
-	}
-
 	// If packet contains original data,
 	if (id < block_count) {
 		// Process it immediately
@@ -1369,27 +1383,6 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	GroupFlags::ClearOpposite(code_group);
 }
 
-// Send collected statistics
-void Shorthair::SendPong(int code_group) {
-	_stats.Calculate();
-
-	u8 pkt[3 + PONG_SIZE];
-
-	// Add sequence number to front
-	*(u16*)pkt = getLE16(_out_seq++);
-
-	// Mark as OOB
-	pkt[2] = (u8)code_group | 0x80;
-
-	// Write pong data
-	pkt[3] = PONG_TYPE;
-	*(u32*)(pkt + 4) = getLE(_stats.GetSeen());
-	*(u32*)(pkt + 8) = getLE(_stats.GetTotal());
-
-	// Send it
-	_settings.interface->SendData(pkt, sizeof(pkt));
-}
-
 void Shorthair::OnGroupTimeout(const u8 group) {
 	CAT_IF_DUMP(cout << " ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ !!!!!!!!!!!!!!!!!!!!!!!!!!! TIMEOUT " << (int)group << endl;)
 	_groups[group].Close(_allocator);
@@ -1431,6 +1424,8 @@ bool Shorthair::Initialize(const Settings &settings) {
 	_last_group = 0;
 
 	_out_seq = 0;
+	_send_stats = false;
+	_last_stats = 0;
 
 	_stats.Initialize();
 
@@ -1460,67 +1455,126 @@ void Shorthair::Send(const void *data, int len) {
 	CAT_ENFORCE(len <= _settings.max_data_size);
 
 	Packet *p = _encoder.Queue(len);
-
-	u8 *buffer = p->data;
-
-	const u8 packet_group = _code_group + 1;
+	u8 *pkt = p->data;
+	int pkt_len = len + ORIGINAL_OVERHEAD;
 
 	// Insert sequence number at the front
-	*(u16*)buffer = getLE16(_out_seq++);
+	*(u16*)pkt = getLE16(_out_seq++);
+
+	// If time to send stats,
+	if (_send_stats) {
+		_send_stats = false;
+
+		CAT_IF_DUMP(cout << "Attaching statistics to outgoing message!" << endl);
+
+		// Attach stats to the front
+		pkt[2] = 0x81;
+		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
+		*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
+
+		pkt += 11;
+		pkt_len += 9;
+	} else {
+		pkt += 2;
+	}
 
 	// Add next code group (this is part of the code group after the next swap)
-	buffer[2] = packet_group & 0x7f;
+	const u8 code_group = _code_group + 1;
+	pkt[0] = code_group & 0x7f;
 
-	u16 block_count = _encoder.GetCurrentCount();
+	int block_count = _encoder.GetCurrentCount();
 
 	u8 id = (u8)(block_count - 1);
 
 	// Add check symbol number
-	buffer[3] = id; // id of packet
+	pkt[1] = id; // id of packet
 
 	// For original data send the current block count, which will
 	// always be one ahead of the block ID.
 	// NOTE: This allows the decoder to know when it has received
 	// all the packets in a code group for the zero-loss case.
-	buffer[4] = id; // k - 1
-
-	CAT_DEBUG_ENFORCE(ORIGINAL_OVERHEAD == 5);
+	pkt[2] = id; // k - 1
 
 	// Copy input data into place
-	memcpy(buffer + ORIGINAL_OVERHEAD, data, len);
+	memcpy(pkt + 3, data, len);
 
 	// Transmit
-	_settings.interface->SendData(buffer, len + ORIGINAL_OVERHEAD);
+	_settings.interface->SendData(p->data, pkt_len);
 }
 
 // Send an OOB packet, first byte is type code
 void Shorthair::SendOOB(const u8 *data, int len) {
 	CAT_ENFORCE(len > 0);
-	CAT_ENFORCE(data[0] != PONG_TYPE);
 	CAT_ENFORCE(1 + len <= _packet_buffer.size())
 
-	u8 *buffer = _packet_buffer.get();
+	u8 *pkt = _packet_buffer.get();
+	u8 *pkt_front = pkt;
+	int pkt_len = len + 3;
 
-	// Insert sequence number at the front (just to construct the packet)
-	*(u16*)buffer = getLE16(_out_seq++);
+	// Insert sequence number at the front
+	*(u16*)pkt = getLE16(_out_seq++);
+
+	// If time to send stats,
+	if (_send_stats) {
+		_send_stats = false;
+
+		CAT_IF_DUMP(cout << "Attaching statistics to outgoing OOB message!" << endl);
+
+		// Attach stats to the front
+		pkt[2] = 0x81;
+		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
+		*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
+
+		pkt += 11;
+		pkt_len += 9;
+	} else {
+		pkt += 2;
+	}
 
 	// Mark OOB
-	buffer[2] = 0x80;
+	pkt[0] = 0x80;
 
 	// Copy input data into place
-	memcpy(buffer + 3, data, len);
+	memcpy(pkt + 1, data, len);
 
 	// Transmit
-	_settings.interface->SendData(buffer, len + 3);
+	_settings.interface->SendData(pkt_front, pkt_len);
 }
 
 // Called once per tick, about 10-20 ms
 void Shorthair::Tick() {
-	const u32 ms = _clock.msec();
+	const u32 now = _clock.msec();
 
-	const int recovery_time = ms - _last_swap_time;
+	const int recovery_time = now - _last_swap_time;
 	int expected_sent = _redundant_count;
 	int max_delay = _settings.max_delay;
+
+	// If it is time to send stats again,
+	if (now - _last_stats > STAT_TRANSMIT_INTERVAL) {
+		_last_stats = now;
+
+		// If stats still not sent from last time,
+		if (_send_stats) {
+			u8 *pkt = _packet_buffer.get();
+
+			// Insert sequence number at the front
+			*(u16*)pkt = getLE16(_out_seq++);
+
+			pkt[2] = 0x81;
+			*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
+			*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
+
+			CAT_IF_DUMP(cout << "Sending stats alone" << endl);
+
+			// Transmit
+			_settings.interface->SendData(pkt, 11);
+		}
+
+		// Calculate new stats
+		_stats.Calculate();
+
+		_send_stats = true;
+	}
 
 	// If not swapping the encoder this tick,
 	if ((u32)recovery_time < max_delay) {
@@ -1549,7 +1603,7 @@ void Shorthair::Tick() {
 
 	// If it is time to swap the encoder,
 	if ((u32)recovery_time >= max_delay) {
-		_last_swap_time = ms;
+		_last_swap_time = now;
 
 		// Packet count
 		const int N = _encoder.GetCurrentCount();
@@ -1567,7 +1621,7 @@ void Shorthair::Tick() {
 			// Encode queued data now
 			_encoder.EncodeQueued(_redundant_count);
 
-			CAT_IF_DUMP(cout << "New code group " << (int)_code_group << ": N = " << N << " R = " << _redundant_count << " loss=" << _loss.Get() << endl);
+			CAT_IF_DUMP(cout << "New code group " << (int)_code_group << ": N = " << N << " R = " << _redundant_count << " loss=" << _loss.GetReal() << endl);
 		} else {
 			CAT_IF_DUMP(cout << "Attempted to open a new code group with no data" << endl);
 		}
@@ -1575,24 +1629,24 @@ void Shorthair::Tick() {
 }
 
 // On packet received
-void Shorthair::Recv(void *pkt, int len) {
+void Shorthair::Recv(void *vpkt, int len) {
+	u8 *pkt = static_cast<u8*>( vpkt );
+
 	// If the header is not truncated,
 	CAT_DEBUG_ENFORCE(len >= 3);
 	if (len >= 3) {
 		// Read 16-bit sequence number from the front
 		u16 seq = getLE16(*(u16*)pkt);
 
+		// If out of band,
+		if (pkt[2] & 0x80) {
+			OnOOB(pkt[2], pkt + 3, len - 3);
+		} else {
+			OnData(pkt + 2, len - 2);
+		}
+
 		// Update stats
 		_stats.Update(seq);
-
-		u8 *buffer = static_cast<u8*>( pkt );
-
-		// If out of band,
-		if (buffer[2] & 0x80) {
-			OnOOB(buffer + 3, len - 3);
-		} else {
-			OnData(buffer + 2, len - 2);
-		}
 	}
 }
 

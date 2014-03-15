@@ -77,16 +77,13 @@ static const int MIN_CODE_DURATION = 100; // Milliseconds
 // Loss estimate clamp values
 static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;
 static const float SHORTHAIR_MAX_LOSS_ESTIMATE = 0.5f;
-
-// OOB Pong packet type
-static const u8 PONG_TYPE = 0xff;
-static const int PONG_SIZE = 1 + 4 + 4; // Includes type
-
+static const int STAT_TRANSMIT_INTERVAL = 1000; // ms
 
 //// LossEstimator
 
 class LossEstimator {
-	static const int BINS = 32;
+	// Remember 10 seconds of loss stats
+	static const int BINS = 10;
 	struct {
 		u32 seen, count;
 	} _bins[BINS];
@@ -116,39 +113,6 @@ public:
 };
 
 
-//// DelayEstimator
-
-class DelayEstimator {
-	static const int BINS = 32;
-	struct {
-		int delay;
-	} _bins[BINS];
-	int _count, _index;
-
-	// Clamp values
-	int _min_delay, _max_delay;
-
-	// Resulting values
-	int _real_delay, _clamped_delay;
-
-public:
-	void Initialize(int min_delay, int max_delay);
-
-	void Insert(int delay);
-
-	// Pick estimated upper-bound on one-way s2c delay based on history
-	void Calculate();
-
-	CAT_INLINE int GetReal() {
-		return _real_delay;
-	}
-
-	CAT_INLINE int GetClamped() {
-		return _clamped_delay;
-	}
-};
-
-
 //// Packet
 
 struct Packet : BatchHead {
@@ -168,9 +132,6 @@ struct Packet : BatchHead {
 struct CodeGroup {
 	// Group is open?
 	bool open;
-
-	// Timestamp on first packet for this group
-	u32 open_time;
 
 	// Largest ID seen for each code group, for decoding the ID
 	int largest_id;

@@ -110,13 +110,12 @@ class Shorthair : protected GroupFlags {
 	// Packet buffers are allocated with room for the protocol overhead + data
 	ReuseAllocator _allocator;
 
-	// Next outgoing sequence number
-	u16 _out_seq;
-
 private:
 	// Statistics
-	DelayEstimator _delay;
 	LossEstimator _loss;
+
+	// Next outgoing sequence number
+	u16 _out_seq;
 
 	// Code group currently being sent
 	u8 _code_group;
@@ -128,6 +127,10 @@ private:
 	u32 _last_swap_time;
 	int _redundant_count, _redundant_sent;
 
+	// Flag to attach stats to the next outgoing packet
+	bool _send_stats;
+	u32 _last_stats;
+
 	Encoder _encoder;
 
 protected:
@@ -138,7 +141,7 @@ protected:
 	void UpdateLoss(u32 seen, u32 count);
 
 	// On receiving an out-of-band packet
-	void OnOOB(u8 *pkt, int len);
+	void OnOOB(u8 flags, u8 *pkt, int len);
 
 private:
 	LossStatistics _stats;
@@ -154,9 +157,6 @@ protected:
 
 	// On receiving a data packet
 	void OnData(u8 *pkt, int len);
-
-	// Send collected statistics
-	void SendPong(int code_group);
 
 	// From GroupFlags
 	virtual void OnGroupTimeout(const u8 group_code);
@@ -183,10 +183,6 @@ public:
 
 	CAT_INLINE float GetLoss() {
 		return _loss.GetReal();
-	}
-
-	CAT_INLINE int GetDelay() {
-		return _delay.GetReal();
 	}
 
 	// On startup:
