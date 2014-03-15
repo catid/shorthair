@@ -1547,10 +1547,10 @@ void Shorthair::Tick() {
 
 	const int recovery_time = now - _last_swap_time;
 	int expected_sent = _redundant_count;
-	int max_delay = _settings.max_delay;
+	u32 max_delay = _settings.max_delay;
 
 	// If it is time to send stats again,
-	if (now - _last_stats > STAT_TRANSMIT_INTERVAL) {
+	if ((u32)(now - _last_stats) > (u32)STAT_TRANSMIT_INTERVAL) {
 		_last_stats = now;
 
 		// If stats still not sent from last time,
