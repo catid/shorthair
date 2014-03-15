@@ -74,9 +74,13 @@ static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest pa
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 
+// Loss estimate clamp values
+static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;
+static const float SHORTHAIR_MAX_LOSS_ESTIMATE = 0.5f;
+
 // OOB Pong packet type
 static const u8 PONG_TYPE = 0xff;
-static const int PONG_SIZE = 1 + 1 + 4 + 4; // Includes OOB byte + type
+static const int PONG_SIZE = 1 + 4 + 4; // Includes type
 
 
 //// LossEstimator
