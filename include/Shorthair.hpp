@@ -86,14 +86,8 @@ struct Settings {
 	// Good default: 0.0001
 	double target_loss;			// Target packet loss rate
 
-	// Good default: 0.03
-	float min_loss;				// [0..1] packetloss probability lower limit
-
-	// Good default: 0.5
-	float max_loss;				// [0..1] packetloss probability upper limit
-
-	// Good default: 100 ms ... 2000 ms
-	int min_delay, max_delay;	// Milliseconds clamp values for delay estimation
+	// Good default: 100 ms or RTT/2
+	int max_delay;				// Maximum acceptable delay for recovery
 
 	// Good default: 1350 bytes
 	int max_data_size;			// Maximum data size in bytes
@@ -127,14 +121,10 @@ private:
 	// Code group currently being sent
 	u8 _code_group;
 
-	// Swap times for each code group for RTT calculation
-	u32 _group_stamps[256];
-
 	// Packet workspace buffer
 	SmartArray<u8> _packet_buffer;
 
 	// Rate of swapping and redundant symbol counter
-	u32 _swap_interval;
 	u32 _last_swap_time;
 	int _redundant_count, _redundant_sent;
 
@@ -143,12 +133,6 @@ private:
 protected:
 	// Send a check symbol
 	bool SendCheckSymbol();
-
-	// Calculate interval from delay
-	void CalculateInterval();
-
-	// From pong message, round-trip time
-	void UpdateRTT(int ms);
 
 	// From pong message, number of packets seen out of count in interval
 	void UpdateLoss(u32 seen, u32 count);

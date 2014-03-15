@@ -792,53 +792,6 @@ void LossEstimator::Calculate() {
 }
 
 
-//// DelayEstimator
-
-void DelayEstimator::Initialize(int min_delay, int max_delay) {
-	_index = 0;
-	_count = 0;
-	_min_delay = min_delay;
-	_max_delay = max_delay;
-	_delay = min_delay;
-}
-
-void DelayEstimator::Insert(int delay) {
-	// Insert data
-	_bins[_index].delay = delay;
-
-	// Wrap around
-	if (++_index >= BINS) {
-		_index = 0;
-	}
-
-	// If not full yet,
-	if (_count < BINS) {
-		_count++;
-	}
-}
-
-void DelayEstimator::Calculate() {
-	u64 sum = 0;
-	const int len = _count;
-
-	for (int ii = 0; ii < len; ++ii) {
-		int delay = _bins[ii].delay;
-
-		sum += delay;
-	}
-
-	_delay = (int)(sum / len);
-
-	if (_delay < _min_delay) {
-		_delay = _min_delay;
-	} else if (_delay > _max_delay) {
-		_delay = _max_delay;
-	}
-
-	// TODO: Validate that this is a good predictor
-}
-
-
 //// CodeGroup
 
 void CodeGroup::Open(u32 ms) {
@@ -1193,47 +1146,6 @@ bool Shorthair::SendCheckSymbol() {
 	return true;
 }
 
-// Calculate interval from delay
-void Shorthair::CalculateInterval() {
-	int delay = _delay.Get();
-
-	// From previous work: Ideal buffer size = delay + swap interval * 2
-
-	// Reasoning: We want to be faster than TCP for recovery, and
-	// ARQ recovery speed > 3x delay : data -> ack -> retrans
-	// Usually there's a timeout also but let's pretend it's ideal ARQ.
-
-	// Crazy idea:
-	// So our buffer size should be 3x delay.
-	// So our swap interval should be about equal to delay.
-
-	// Note that if delay is long, we only really need to have a swap
-	// interval long enough to cover burst losses so this may be an
-	// upper bound for some cases of interest.
-
-	// Idea: Give it at least 100 milliseconds of buffering before a swap
-	if (delay < MIN_CODE_DURATION) {
-		delay = MIN_CODE_DURATION;
-	}
-
-	_swap_interval = delay;
-}
-
-// From pong message, round-trip time
-void Shorthair::UpdateRTT(int ms) {
-	CAT_ENFORCE(ms >= 0);
-
-	// Approximate delay with RTT / 2.
-	// TODO: Adjust to match the asymmetry of your channel,
-	// or use exact time measurements when available instead.
-	int delay = ms / 2;
-
-	_delay.Insert(delay);
-	_delay.Calculate();
-
-	CalculateInterval();
-}
-
 // From pong message, number of packets seen out of count in interval
 void Shorthair::UpdateLoss(u32 seen, u32 count) {
 	CAT_ENFORCE(seen <= count);
@@ -1247,31 +1159,24 @@ void Shorthair::UpdateLoss(u32 seen, u32 count) {
 void Shorthair::OnOOB(u8 *pkt, int len) {
 	// If truncated,
 	CAT_DEBUG_ENFORCE(len > 1);
-	if (len < 2) {
+	if (len < 1) {
 		// Ignore empty OOB packets
 		return;
 	}
 
 	// If it is a pong,
-	if (len == PONG_SIZE && pkt[1] == PONG_TYPE) {
-		u8 code_group = ReconstructCounter<7, u8>(_code_group, pkt[0] & 0x7f);
-		u32 seen = getLE(*(u32*)(pkt + 2));
-		u32 count = getLE(*(u32*)(pkt + 2 + 4));
-		int rtt = _clock.msec() - _group_stamps[code_group];
+	if (len == PONG_SIZE && pkt[0] == PONG_TYPE) {
+		u32 seen = getLE(*(u32*)(pkt + 1));
+		u32 count = getLE(*(u32*)(pkt + 1 + 4));
 
-		// Calculate RTT
-		if (rtt >= 0) {
-			// Compute updates
-			UpdateRTT(rtt);
-			UpdateLoss(seen, count);
-		}
+		UpdateLoss(seen, count);
 
-		CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _swap_interval << endl);
+		CAT_IF_DUMP(cout << "PONG group = " << (int)code_group << " rtt = " << rtt << " seen = " << seen << " / count = " << count << " swap interval = " << _settings.max_delay << endl);
 	} else {
-		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[1] << endl);
+		CAT_IF_DUMP(cout << "Delivering OOB data of length " << len << " and type = " << (int)pkt[0] << endl);
 
 		// Pass unrecognized OOB data to the interface
-		_settings.interface->OnOOB(pkt + 1, len - 1);
+		_settings.interface->OnOOB(pkt, len);
 	}
 }
 
@@ -1464,7 +1369,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 void Shorthair::SendPong(int code_group) {
 	_stats.Calculate();
 
-	u8 pkt[2 + PONG_SIZE];
+	u8 pkt[3 + PONG_SIZE];
 
 	// Add sequence number to front
 	*(u16*)pkt = getLE16(_out_seq++);
@@ -1511,8 +1416,7 @@ bool Shorthair::Initialize(const Settings &settings) {
 
 	_encoder.Initialize(&_allocator);
 
-	_delay.Initialize(_settings.min_delay, _settings.max_delay);
-	_loss.Initialize(_settings.min_loss, _settings.max_loss);
+	_loss.Initialize(SHORTHAIR_MIN_LOSS_ESTIMATE, SHORTHAIR_MAX_LOSS_ESTIMATE);
 
 	_redundant_count = 0;
 	_redundant_sent = 0;
@@ -1529,11 +1433,7 @@ bool Shorthair::Initialize(const Settings &settings) {
 	// Clear group data
 	CAT_OBJCLR(_groups);
 
-	CAT_OBJCLR(_group_stamps);
-
 	GroupFlags::Clear();
-
-	CalculateInterval();
 
 	_initialized = true;
 
@@ -1568,13 +1468,6 @@ void Shorthair::Send(const void *data, int len) {
 	buffer[2] = packet_group & 0x7f;
 
 	u16 block_count = _encoder.GetCurrentCount();
-
-	// On first packet of a group,
-	// TODO: This doesn't seem like the best way
-	if (block_count == 1) {
-		// Tag this new group with the start time
-		_group_stamps[packet_group] = _clock.msec();
-	}
 
 	u8 id = (u8)(block_count - 1);
 
@@ -1623,10 +1516,11 @@ void Shorthair::Tick() {
 
 	const int recovery_time = ms - _last_swap_time;
 	int expected_sent = _redundant_count;
+	int max_delay = _settings.max_delay;
 
 	// If not swapping the encoder this tick,
-	if ((u32)recovery_time < _swap_interval) {
-		int elapsed = ((_redundant_count + 1) * recovery_time) / _swap_interval;
+	if ((u32)recovery_time < max_delay) {
+		int elapsed = ((_redundant_count + 1) * recovery_time) / max_delay;
 
 		// Pick min(_redundant_count, elapsed)
 		if (expected_sent > elapsed) {
@@ -1650,7 +1544,7 @@ void Shorthair::Tick() {
 	}
 
 	// If it is time to swap the encoder,
-	if ((u32)recovery_time >= _swap_interval) {
+	if ((u32)recovery_time >= max_delay) {
 		_last_swap_time = ms;
 
 		// Packet count
@@ -1691,7 +1585,7 @@ void Shorthair::Recv(void *pkt, int len) {
 
 		// If out of band,
 		if (buffer[2] & 0x80) {
-			OnOOB(buffer + 2, len - 2);
+			OnOOB(buffer + 3, len - 3);
 		} else {
 			OnData(buffer + 2, len - 2);
 		}

@@ -110,10 +110,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, MersenneTwister *prng) {
 
 	Settings settings;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.03;
-	settings.max_loss = 0.5;
-	settings.min_delay = 100;
-	settings.max_delay = 3000;
+	settings.max_delay = 100;
 	settings.max_data_size = 1350;
 	settings.interface = this;
 
@@ -193,10 +190,7 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 
 	Settings settings;
 	settings.target_loss = 0.0001;
-	settings.min_loss = 0.03;
-	settings.max_loss = 0.5;
-	settings.min_delay = 100;
-	settings.max_delay = 3000;
+	settings.max_delay = 100;
 	settings.max_data_size = 1350;
 	settings.interface = this;
 
