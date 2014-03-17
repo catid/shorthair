@@ -151,7 +151,7 @@ private:
 	u8 _last_group;
 
 	// Code groups
-	CodeGroup _groups[256];
+	CodeGroup _groups[NUM_CODE_GROUPS];
 
 protected:
 	void RecoverGroup(CodeGroup *group);

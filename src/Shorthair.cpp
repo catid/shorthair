@@ -1298,8 +1298,10 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	int id = (u32)pkt[1];
 	int block_count = (u32)pkt[2] + 1;
 
-	u8 *data = pkt + PROTOCOL_OVERHEAD;
-	int data_len = len - PROTOCOL_OVERHEAD;
+	u8 *data = pkt + 3;
+	int data_len = len - 3;
+
+	LOG("~~ ACTUAL GOT id %d bc %d cg %d", id, block_count, (int)code_group);
 
 	// If block count is not the largest seen for this group,
 	if (block_count < group->block_count) {
@@ -1318,6 +1320,23 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 		// Increment original seen count
 		group->original_seen++;
+
+		// Packet that will contain this data
+		Packet *p = _allocator.AcquireObject<Packet>();
+		p->batch_next = 0;
+
+		// Store ID in id/len field
+		p->id = (u16)id;
+
+		// Store packet, prepending length.
+		// NOTE: We cannot efficiently pad with zeroes yet because we do not
+		// necessarily know what the largest packet length is yet.  And anyway
+		// we may not need to pad at all if no loss occurs.
+		*(u16*)p->data = getLE16((u16)data_len);
+		memcpy(p->data + 2, data, data_len);
+
+		// Insert it into the original packet list
+		group->AddOriginal(p);
 	} else {
 		if (group->original_seen >= block_count) {
 			LOG("~~ Closing group %d: Just noticed all originals are received", (int)code_group);
@@ -1345,27 +1364,14 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Pull in codec parameters
 		group->largest_len = data_len - 1;
 		group->recovery_count = (u32)pkt[3] + 1;
-	}
 
-	// Packet that will contain this data
-	Packet *p = _allocator.AcquireObject<Packet>();
-	p->batch_next = 0;
+		// Packet that will contain this data
+		Packet *p = _allocator.AcquireObject<Packet>();
+		p->batch_next = 0;
 
-	// Store ID in id/len field
-	p->id = (u16)id;
+		// Store ID in id/len field
+		p->id = (u16)id;
 
-	// If packet ID is from original set,
-	if (id < block_count) {
-		// Store packet, prepending length.
-		// NOTE: We cannot efficiently pad with zeroes yet because we do not
-		// necessarily know what the largest packet length is yet.  And anyway
-		// we may not need to pad at all if no loss occurs.
-		*(u16*)p->data = getLE16((u16)data_len);
-		memcpy(p->data + 2, data, data_len);
-
-		// Insert it into the original packet list
-		group->AddOriginal(p);
-	} else {
 		// Store recovery packet, which has length included (encoded)
 		memcpy(p->data, data + 1, data_len - 1);
 
@@ -1449,6 +1455,8 @@ bool Shorthair::Initialize(const Settings &settings) {
 // Cleanup
 void Shorthair::Finalize() {
 	if (_initialized) {
+		// NOTE: The allocator object will free allocated memory in its dtor
+
 		_encoder.Finalize();
 
 		_clock.OnFinalize();
@@ -1491,9 +1499,7 @@ void Shorthair::Send(const void *data, int len) {
 	const u8 code_group = _code_group + 1;
 	pkt[0] = code_group & 0x7f;
 
-	int block_count = _encoder.GetCurrentCount();
-
-	u8 id = (u8)(block_count - 1);
+	const u8 id = (u8)_encoder.GetCurrentCount();
 
 	// Add check symbol number
 	pkt[1] = id; // id of packet
