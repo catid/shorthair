@@ -73,6 +73,7 @@ static const int RECOVERY_OVERHEAD = 2 + 1 + 2 + PROTOCOL_OVERHEAD; // + seqNo +
 static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest packet size for recovery packets
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
+static const int NUM_CODE_GROUPS = 256;
 
 // Loss estimate clamp values
 static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;
@@ -342,7 +343,7 @@ public:
 	void Finalize();
 
 	// Add an original packet
-	Packet *Queue(int len);
+	void Queue(Packet *p);
 
 	CAT_INLINE int GetCurrentCount() {
 		return _original_count;

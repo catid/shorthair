@@ -120,8 +120,9 @@ private:
 	// Code group currently being sent
 	u8 _code_group;
 
-	// Packet workspace buffer
-	SmartArray<u8> _packet_buffer;
+	// Packet workspace buffers
+	SmartArray<u8> _sym_buffer;
+	SmartArray<u8> _oob_buffer;
 
 	// Rate of swapping and redundant symbol counter
 	u32 _last_swap_time;
@@ -150,7 +151,7 @@ private:
 	u8 _last_group;
 
 	// Code groups
-	CodeGroup _groups[256];
+	CodeGroup _groups[NUM_CODE_GROUPS];
 
 protected:
 	void RecoverGroup(CodeGroup *group);

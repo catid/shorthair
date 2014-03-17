@@ -29,6 +29,7 @@
 #include "Shorthair.hpp"
 #include "EndianNeutral.hpp"
 #include "BitMath.hpp"
+#include "Mutex.hpp"
 using namespace cat;
 using namespace shorthair;
 
@@ -48,6 +49,8 @@ using namespace shorthair;
 #include <cmath>
 #include <vector>
 using namespace std;
+
+static Mutex m_mutex;
 
 
 /*
@@ -968,13 +971,12 @@ void Encoder::Finalize() {
 	}
 }
 
-Packet *Encoder::Queue(int len) {
+void Encoder::Queue(Packet *p) {
+	int len = p->len;
+
 	CAT_ENFORCE(len > 0);
 
-	// Allocate sent packet buffer
-	Packet *p = _allocator->AcquireObject<Packet>();
-	p->batch_next = 0;
-	p->len = len;
+	AutoMutex guard(m_mutex);
 
 	// If this new packet is larger than the previous ones,
 	if (_largest < len) {
@@ -991,11 +993,11 @@ Packet *Encoder::Queue(int len) {
 	_tail = p;
 
 	_original_count++;
-
-	return p;
 }
 
 void Encoder::EncodeQueued(int m) {
+	AutoMutex guard(m_mutex);
+
 	LOG("** Started encoding m=%d and k=%d largest bytes=%d", m, _original_count, _largest);
 
 	// Abort if input is invalid
@@ -1099,7 +1101,7 @@ void Encoder::EncodeQueued(int m) {
 }
 
 // Returns 0 if recovery blocks cannot be sent yet
-int Encoder::GenerateRecoveryBlock(u8 *buffer) {
+int Encoder::GenerateRecoveryBlock(u8 *pkt) {
 	const int block_bytes = _block_bytes;
 
 	//CAT_IF_DUMP(cout << "<< Generated recovery block id = " << _next_recovery_block << " block_bytes=" << _block_bytes << endl);
@@ -1109,9 +1111,9 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 		LOG("Writing k = 1 special form len=%d", block_bytes);
 
 		// Write special form
-		buffer[0] = 1;
-		buffer[1] = 0;
-		memcpy(buffer + 2, _buffer.get(), block_bytes);
+		pkt[0] = 1;
+		pkt[1] = 0;
+		memcpy(pkt + 2, _buffer.get(), block_bytes);
 
 		return 2 + block_bytes;
 	}
@@ -1124,14 +1126,14 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 	const int index = _next_recovery_block++;
 
 	// Write header
-	buffer[0] = (u8)(_k + index);
-	buffer[1] = (u8)(_k - 1);
-	buffer[2] = (u8)(_m - 1);
+	pkt[0] = (u8)(_k + index);
+	pkt[1] = (u8)(_k - 1);
+	pkt[2] = (u8)(_m - 1);
 
 	const u8 *src = _buffer.get() + block_bytes * index;
 
 	// Write data
-	memcpy(buffer + 3, src, block_bytes);
+	memcpy(pkt + 3, src, block_bytes);
 
 	// Return bytes written
 	return 3 + block_bytes;
@@ -1142,8 +1144,8 @@ int Encoder::GenerateRecoveryBlock(u8 *buffer) {
 
 // Send a check symbol
 bool Shorthair::SendCheckSymbol() {
-	u8 *buffer = _packet_buffer.get();
-	int len = _encoder.GenerateRecoveryBlock(buffer + 3);
+	u8 *pkt = _sym_buffer.get();
+	int len = _encoder.GenerateRecoveryBlock(pkt + 3);
 
 	// If no data to send,
 	if (len <= 0) {
@@ -1152,13 +1154,13 @@ bool Shorthair::SendCheckSymbol() {
 	}
 
 	// Insert next sequence number
-	*(u16*)buffer = getLE16(_out_seq++);
+	*(u16*)pkt = getLE16(_out_seq++);
 
 	// Prepend the code group
-	buffer[2] = _code_group & 0x7f;
+	pkt[2] = _code_group & 0x7f;
 
 	// Transmit
-	_settings.interface->SendData(buffer, len + 3);
+	_settings.interface->SendData(pkt, len + 3);
 
 	return true;
 }
@@ -1296,8 +1298,10 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	int id = (u32)pkt[1];
 	int block_count = (u32)pkt[2] + 1;
 
-	u8 *data = pkt + PROTOCOL_OVERHEAD;
-	int data_len = len - PROTOCOL_OVERHEAD;
+	u8 *data = pkt + 3;
+	int data_len = len - 3;
+
+	LOG("~~ ACTUAL GOT id %d bc %d cg %d", id, block_count, (int)code_group);
 
 	// If block count is not the largest seen for this group,
 	if (block_count < group->block_count) {
@@ -1310,11 +1314,29 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If packet contains original data,
 	if (id < block_count) {
+		LOG("~~ GOT id %d bc %d cg %d", id, block_count, (int)code_group);
 		// Process it immediately
 		_settings.interface->OnPacket(data, data_len);
 
 		// Increment original seen count
 		group->original_seen++;
+
+		// Packet that will contain this data
+		Packet *p = _allocator.AcquireObject<Packet>();
+		p->batch_next = 0;
+
+		// Store ID in id/len field
+		p->id = (u16)id;
+
+		// Store packet, prepending length.
+		// NOTE: We cannot efficiently pad with zeroes yet because we do not
+		// necessarily know what the largest packet length is yet.  And anyway
+		// we may not need to pad at all if no loss occurs.
+		*(u16*)p->data = getLE16((u16)data_len);
+		memcpy(p->data + 2, data, data_len);
+
+		// Insert it into the original packet list
+		group->AddOriginal(p);
 	} else {
 		if (group->original_seen >= block_count) {
 			LOG("~~ Closing group %d: Just noticed all originals are received", (int)code_group);
@@ -1342,27 +1364,14 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		// Pull in codec parameters
 		group->largest_len = data_len - 1;
 		group->recovery_count = (u32)pkt[3] + 1;
-	}
 
-	// Packet that will contain this data
-	Packet *p = _allocator.AcquireObject<Packet>();
-	p->batch_next = 0;
+		// Packet that will contain this data
+		Packet *p = _allocator.AcquireObject<Packet>();
+		p->batch_next = 0;
 
-	// Store ID in id/len field
-	p->id = (u16)id;
+		// Store ID in id/len field
+		p->id = (u16)id;
 
-	// If packet ID is from original set,
-	if (id < block_count) {
-		// Store packet, prepending length.
-		// NOTE: We cannot efficiently pad with zeroes yet because we do not
-		// necessarily know what the largest packet length is yet.  And anyway
-		// we may not need to pad at all if no loss occurs.
-		*(u16*)p->data = getLE16((u16)data_len);
-		memcpy(p->data + 2, data, data_len);
-
-		// Insert it into the original packet list
-		group->AddOriginal(p);
-	} else {
 		// Store recovery packet, which has length included (encoded)
 		memcpy(p->data, data + 1, data_len - 1);
 
@@ -1409,7 +1418,8 @@ bool Shorthair::Initialize(const Settings &settings) {
 	const int buffer_size = SHORTHAIR_OVERHEAD + _settings.max_data_size;
 
 	// Allocate recovery packet workspace
-	_packet_buffer.resize(buffer_size);
+	_sym_buffer.resize(buffer_size);
+	_oob_buffer.resize(buffer_size);
 
 	// Initialize packet storage buffer allocator
 	_allocator.Initialize(sizeof(Packet) - 1 + buffer_size);
@@ -1445,6 +1455,8 @@ bool Shorthair::Initialize(const Settings &settings) {
 // Cleanup
 void Shorthair::Finalize() {
 	if (_initialized) {
+		// NOTE: The allocator object will free allocated memory in its dtor
+
 		_encoder.Finalize();
 
 		_clock.OnFinalize();
@@ -1457,7 +1469,11 @@ void Shorthair::Finalize() {
 void Shorthair::Send(const void *data, int len) {
 	CAT_ENFORCE(len <= _settings.max_data_size);
 
-	Packet *p = _encoder.Queue(len);
+	// Allocate sent packet buffer
+	Packet *p = _allocator.AcquireObject<Packet>();
+	p->batch_next = 0;
+	p->len = len;
+
 	u8 *pkt = p->data;
 	int pkt_len = len + ORIGINAL_OVERHEAD;
 
@@ -1483,9 +1499,7 @@ void Shorthair::Send(const void *data, int len) {
 	const u8 code_group = _code_group + 1;
 	pkt[0] = code_group & 0x7f;
 
-	int block_count = _encoder.GetCurrentCount();
-
-	u8 id = (u8)(block_count - 1);
+	const u8 id = (u8)_encoder.GetCurrentCount();
 
 	// Add check symbol number
 	pkt[1] = id; // id of packet
@@ -1501,14 +1515,17 @@ void Shorthair::Send(const void *data, int len) {
 
 	// Transmit
 	_settings.interface->SendData(p->data, pkt_len);
+
+	// Queue after sending to avoid lock latency
+	_encoder.Queue(p);
 }
 
 // Send an OOB packet, first byte is type code
 void Shorthair::SendOOB(const u8 *data, int len) {
 	CAT_ENFORCE(len > 0);
-	CAT_ENFORCE(1 + len <= _packet_buffer.size())
+	CAT_ENFORCE(1 + len <= _oob_buffer.size());
 
-	u8 *pkt = _packet_buffer.get();
+	u8 *pkt = _oob_buffer.get();
 	u8 *pkt_front = pkt;
 	int pkt_len = len + 3;
 
@@ -1554,7 +1571,7 @@ void Shorthair::Tick() {
 
 		// If stats still not sent from last time,
 		if (_send_stats) {
-			u8 *pkt = _packet_buffer.get();
+			u8 pkt[11];
 
 			// Insert sequence number at the front
 			*(u16*)pkt = getLE16(_out_seq++);
