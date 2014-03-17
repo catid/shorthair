@@ -287,7 +287,8 @@ public:
 		}
 
 		// If more than ~3 MB of data gets lost,
-		if (delta > 2000) {
+		if (_no_data || delta > 2000) {
+			_no_data = false;
 			// Reset stats to current seq (give up counting packet loss)
 			_largest_seq = seq;
 			_current_count = 0;
