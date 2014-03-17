@@ -293,7 +293,7 @@ public:
 			_largest_seq = seq;
 			_current_count = 0;
 			_current_start = seq;
-			_frozen_count = 1;
+			_frozen_count = 0;
 			_frozen_start = seq;
 		}
 
