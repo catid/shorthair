@@ -1147,7 +1147,6 @@ bool Shorthair::SendCheckSymbol() {
 
 	// If no data to send,
 	if (len <= 0) {
-		// Abort
 		return false;
 	}
 
@@ -1157,13 +1156,11 @@ bool Shorthair::SendCheckSymbol() {
 	// Prepend the code group
 	pkt[2] = _code_group & 0x7f;
 
-	// Transmit
 	_settings.interface->SendData(pkt, len + 3);
 
 	return true;
 }
 
-// From pong message, number of packets seen out of count in interval
 void Shorthair::UpdateLoss(u32 seen, u32 count) {
 	CAT_ENFORCE(seen <= count);
 
@@ -1539,8 +1536,6 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
 		*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
 
-		LOG("******** SENDING STATS = %d %d", _stats.GetSeen(), _stats.GetTotal());
-
 		pkt += 11;
 		pkt_len += 9;
 	} else {
@@ -1586,6 +1581,8 @@ void Shorthair::Tick() {
 
 		// Calculate new stats
 		_stats.Calculate();
+
+		LOG("******** COLLECTED STATS = %d %d", _stats.GetSeen(), _stats.GetTotal());
 
 		_send_stats = true;
 	}
