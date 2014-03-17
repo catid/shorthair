@@ -42,6 +42,7 @@ using namespace shorthair;
 #include <android/log.h>
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shorthair", fmt, __VA_ARGS__);
 #else
+#include <cstdio>
 #define LOG(fmt, ...) printf("{shorthair}" fmt "\r\n", __VA_ARGS__);
 #endif
 #endif
@@ -272,7 +273,6 @@ int CalculateApproximate(double p, int n, double Qtarget) {
 	double q;
 	u32 r;
 
-	// TODO: Merge this with upstream stuff on the laptop
 	if (n <= 0) {
 		return 0;
 	}
@@ -795,8 +795,6 @@ void LossEstimator::Calculate() {
 		_real_loss = 0;
 		_clamped_loss = _min_loss;
 	}
-
-	// TODO: Validate that this is a good predictor
 }
 
 
@@ -1149,7 +1147,6 @@ bool Shorthair::SendCheckSymbol() {
 
 	// If no data to send,
 	if (len <= 0) {
-		// Abort
 		return false;
 	}
 
@@ -1159,15 +1156,17 @@ bool Shorthair::SendCheckSymbol() {
 	// Prepend the code group
 	pkt[2] = _code_group & 0x7f;
 
-	// Transmit
 	_settings.interface->SendData(pkt, len + 3);
 
 	return true;
 }
 
-// From pong message, number of packets seen out of count in interval
 void Shorthair::UpdateLoss(u32 seen, u32 count) {
-	CAT_ENFORCE(seen <= count);
+	CAT_DEBUG_ENFORCE(seen <= count);
+	if (seen > count) {
+		// Ignore invalid data
+		return;
+	}
 
 	if (count > 0) {
 		_loss.Insert(seen, count);
@@ -1587,6 +1586,8 @@ void Shorthair::Tick() {
 		// Calculate new stats
 		_stats.Calculate();
 
+		LOG("******** COLLECTED STATS = %d %d", _stats.GetSeen(), _stats.GetTotal());
+
 		_send_stats = true;
 	}
 
@@ -1624,18 +1625,28 @@ void Shorthair::Tick() {
 
 		if (N > 0) {
 			// Calculate number of redundant packets to send this time
-			_redundant_count = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
+			int R = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
+
+			/*
+			 * The redundant count should not be larger than the original
+			 * number of data packets, unless the amount of data is small.
+			 */
+
+			if (R > N && R > 3) {
+				R = N;
+			}
+
+			// NOTE: These packets will be spread out over the swap interval
+			_redundant_count = R;
 			_redundant_sent = 0;
 
 			// Select next code group
 			_code_group++;
 
-			// NOTE: These packets will be spread out over the swap interval
-
-			LOG("New code group %d: N = %d R = %d loss=%f[acted on %f]", (int)_code_group, N, _redundant_count, _loss.GetReal(), _loss.GetClamped());
+			LOG("New code group %d: N = %d R = %d loss=%f[acted on %f]", (int)_code_group, N, R, _loss.GetReal(), _loss.GetClamped());
 
 			// Encode queued data now
-			_encoder.EncodeQueued(_redundant_count);
+			_encoder.EncodeQueued(R);
 		}
 	}
 }
