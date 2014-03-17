@@ -1162,7 +1162,11 @@ bool Shorthair::SendCheckSymbol() {
 }
 
 void Shorthair::UpdateLoss(u32 seen, u32 count) {
-	CAT_ENFORCE(seen <= count);
+	CAT_DEBUG_ENFORCE(seen <= count);
+	if (seen > count) {
+		// Ignore invalid data
+		return;
+	}
 
 	if (count > 0) {
 		_loss.Insert(seen, count);
