@@ -42,6 +42,7 @@ using namespace shorthair;
 #include <android/log.h>
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shorthair", fmt, __VA_ARGS__);
 #else
+#include <cstdio>
 #define LOG(fmt, ...) printf("{shorthair}" fmt "\r\n", __VA_ARGS__);
 #endif
 #endif
@@ -272,7 +273,6 @@ int CalculateApproximate(double p, int n, double Qtarget) {
 	double q;
 	u32 r;
 
-	// TODO: Merge this with upstream stuff on the laptop
 	if (n <= 0) {
 		return 0;
 	}
@@ -795,8 +795,6 @@ void LossEstimator::Calculate() {
 		_real_loss = 0;
 		_clamped_loss = _min_loss;
 	}
-
-	// TODO: Validate that this is a good predictor
 }
 
 
@@ -1540,6 +1538,8 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 		pkt[2] = 0x81;
 		*(u32*)(pkt + 3) = getLE32(_stats.GetSeen());
 		*(u32*)(pkt + 7) = getLE32(_stats.GetTotal());
+
+		LOG("******** SENDING STATS = %d %d", _stats.GetSeen(), _stats.GetTotal());
 
 		pkt += 11;
 		pkt_len += 9;
