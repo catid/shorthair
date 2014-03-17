@@ -252,6 +252,7 @@ class LossStatistics {
 	u32 _current_count;
 
 	u16 _largest_seq;
+	bool _no_data;
 
 	// Stats from last period
 	u32 _seen, _total;
@@ -271,13 +272,28 @@ public:
 		_current_start = 0;
 		_current_count = 0;
 		_largest_seq = 0;
+		_no_data = true;
 	}
 
 	// Update statistics
 	CAT_INLINE void Update(u16 seq) {
+		s16 delta = (s16)(seq - _largest_seq);
+
 		// Update largest IV seen
-		if ((s16)(seq - _largest_seq) > 0) {
+		if (delta > 0) {
 			_largest_seq = seq;
+		} else {
+			delta = -delta;
+		}
+
+		// If more than ~3 MB of data gets lost,
+		if (delta > 2000) {
+			// Reset stats to current seq (give up counting packet loss)
+			_largest_seq = seq;
+			_current_count = 1;
+			_current_start = seq;
+			_frozen_count = 0;
+			_frozen_start = seq;
 		}
 
 		// Accumulate into a bin
@@ -288,7 +304,6 @@ public:
 		}
 	}
 
-	// Update stats when pings occur
 	CAT_INLINE void Calculate() {
 		// Calculate frozen stats
 		_total = _current_start - _frozen_start; // NOTE: Fixes wrapping
