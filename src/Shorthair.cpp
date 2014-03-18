@@ -1193,12 +1193,15 @@ void Shorthair::OnOOB(u8 flags, u8 *pkt, int len) {
 		pkt += 8;
 		len -= 8;
 
-		// If out of band,
-		if (pkt[0] & 0x80) {
-			OnOOB(0, pkt + 1, len - 1);
-			// NOTE: Does not allow attacker to cause more recursion
-		} else {
-			OnData(pkt, len);
+		// If it contains other data too,
+		if (len > 0) {
+			// If out of band,
+			if (pkt[0] & 0x80) {
+				OnOOB(0, pkt + 1, len - 1);
+				// NOTE: Does not allow attacker to cause more recursion
+			} else {
+				OnData(pkt, len);
+			}
 		}
 	} else {
 		LOG("Delivering OOB data of length %d and type = %d", len, (int)pkt[0]);
