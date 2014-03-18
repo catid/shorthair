@@ -1635,10 +1635,10 @@ void Shorthair::Tick() {
 			// If there are a lot of recovery packets,
 			if (R > N) {
 				// If there are also a lot of data packets,
-				if (N > 3) {
+				if (N >= 3) {
 					// Do not do more than double the bandwidth
 					R = N;
-				} else {
+				} else if (R > 3) {
 					// For smaller sets of data it is okay to multiply the data to meet a goal
 					R = 3;
 				}
