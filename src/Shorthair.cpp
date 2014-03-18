@@ -1635,8 +1635,16 @@ void Shorthair::Tick() {
 			 * number of data packets, unless the amount of data is small.
 			 */
 
-			if (R > N && R > 3) {
-				R = N;
+			// If there are a lot of recovery packets,
+			if (R > N) {
+				// If there are also a lot of data packets,
+				if (N >= 3) {
+					// Do not do more than double the bandwidth
+					R = N;
+				} else if (R > 3) {
+					// For smaller sets of data it is okay to multiply the data to meet a goal
+					R = 3;
+				}
 			}
 
 			// NOTE: These packets will be spread out over the swap interval
