@@ -738,7 +738,9 @@ int CalculateRedundancy(double p, int n, double Qtarget) {
 		n * (1 - p) >= 10.))) {
 		return CalculateApproximate(p, n, Qtarget);
 	} else {
-		return CalculateExact(p, n, 0.97, Qtarget);
+		// Use 1.0: 100% recovery rate with Longhair.  I was using Wirehair
+		// before and its Pr = 0.97
+		return CalculateExact(p, n, 1.0, Qtarget);
 	}
 }
 
@@ -800,24 +802,19 @@ void LossEstimator::Calculate() {
 
 //// CodeGroup
 
-void CodeGroup::Open(u32 ms) {
-	open = true;
-	largest_id = 0;
-	block_count = 0;
-	original_seen = 0;
-	total_seen = 0;
-	largest_len = 0;
-	head = tail = 0;
-	recovery_head = recovery_tail = 0;
-}
-
-void CodeGroup::Close(ReuseAllocator &allocator) {
-	open = false;
-
+void CodeGroup::Clean(ReuseAllocator &allocator) {
 	// Free allocated packet memory O(1)
 	allocator.ReleaseBatch(BatchSet(head, tail));
 	allocator.ReleaseBatch(BatchSet(recovery_head, recovery_tail));
 
+	// Zero out state
+	//last_update = 0; Does not need to be cleared
+	largest_id = 0;
+	largest_len = 0;
+	block_count = 0;
+	//recovery_count = 0; Does not need to be cleared
+	original_seen = 0;
+	total_seen = 0;
 	head = tail = 0;
 	recovery_head = recovery_tail = 0;
 }
@@ -868,80 +865,6 @@ void CodeGroup::AddOriginal(Packet *p) {
 		tail = p;
 	}
 	p->batch_next = next;
-}
-
-
-//// GroupFlags
-
-void GroupFlags::ClearOpposite(const u8 group) {
-	// Find current word
-	int word = group >> 5;
-
-	// Clear three opposite words, leaving the
-	// two words ahead and behind alone:
-
-	word += 3;
-	word &= 7;
-	u32 open = _open[word];
-	if (open) {
-		open &= ~_done[word];
-		while (open) {
-			// Find next bit index 0..31
-			u32 msb = BSR32(open);
-
-			// Calculate timeout group
-			u8 timeout_group = (word << 5) | msb;
-
-			OnGroupTimeout(timeout_group);
-
-			// Clear the bit
-			open ^= 1 << msb;
-		}
-	}
-	_done[word] = 0;
-	_open[word] = 0;
-
-	++word;
-	word &= 7;
-	open = _open[word];
-	if (open) {
-		open &= ~_done[word];
-		while (open) {
-			// Find next bit index 0..31
-			u32 msb = BSR32(open);
-
-			// Calculate timeout group
-			u8 timeout_group = (word << 5) | msb;
-
-			OnGroupTimeout(timeout_group);
-
-			// Clear the bit
-			open ^= 1 << msb;
-		}
-	}
-	_done[word] = 0;
-	_open[word] = 0;
-
-	++word;
-	word &= 7;
-	open = _open[word];
-	if (open) {
-		open &= ~_done[word];
-		while (open) {
-			// Find next bit index 0..31
-			u32 msb = BSR32(open);
-
-			// Calculate timeout group
-			u8 timeout_group = (word << 5) | msb;
-
-			OnGroupTimeout(timeout_group);
-
-			// Clear the bit
-			open ^= 1 << msb;
-		}
-	}
-	_done[word] = 0;
-	_open[word] = 0;
 }
 
 
@@ -1271,6 +1194,9 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 			_settings.interface->OnPacket(src + 2, len);
 		}
 	}
+
+	group->Clean(_allocator);
+	group->MarkDone();
 }
 
 // On receiving a data packet
@@ -1284,18 +1210,23 @@ void Shorthair::OnData(u8 *pkt, int len) {
 	CodeGroup *group = &_groups[code_group];
 	_last_group = code_group;
 
-	// If this group is already done,
-	if (GroupFlags::IsDone(code_group)) {
-		// Ignore more data received for this group
+	// If the group is old,
+	if ((u32)(_last_tick - group->last_update) > GROUP_TIMEOUT) {
+		// If the state is dirty,
+		if (group->total_seen != 0) {
+			// Clean it now
+			group->Clean(_allocator);
+		}
+
+		LOG("~~ Opening group %d", (int)code_group);
+	} else if (group->IsDone()) {
+		// Group is already finished (ignore remaining)
+		LOG("~~ Ignoring extra data for group %d", (int)code_group);
 		return;
 	}
 
-	// If group is not open yet,
-	if (!group->open) {
-		openGroup(group, code_group);
-
-		LOG("~~ Opening group %d", (int)code_group);
-	}
+	// Set last group update time
+	group->last_update = _last_tick;
 
 	int id = (u32)pkt[1];
 	int block_count = (u32)pkt[2] + 1;
@@ -1344,7 +1275,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 			LOG("~~ Closing group %d: Just noticed all originals are received", (int)code_group);
 
 			// See above: Original data gets processed immediately
-			closeGroup(group, code_group);
+			group->Clean(_allocator);
+			group->MarkDone();
 			return;
 		} else if (block_count == 1) {
 			LOG("~~ Closing group %d: Special case k = 1 and a redundant packet won", (int)code_group);
@@ -1353,7 +1285,8 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 			_settings.interface->OnPacket(data, data_len);
 
-			closeGroup(group, code_group);
+			group->Clean(_allocator);
+			group->MarkDone();
 			return;
 		}
 
@@ -1389,17 +1322,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 		LOG("~~ Closing group %d: Recovered!", (int)code_group);
 
 		RecoverGroup(group);
-
-		closeGroup(group, code_group);
 	} // end if group can recover
-
-	// Clear opposite in number space
-	GroupFlags::ClearOpposite(code_group);
-}
-
-void Shorthair::OnGroupTimeout(const u8 group) {
-	LOG("~~ Closing group %d: Timeout", (int)group);
-	_groups[group].Close(_allocator);
 }
 
 
@@ -1446,8 +1369,6 @@ bool Shorthair::Initialize(const Settings &settings) {
 
 	// Clear group data
 	CAT_OBJCLR(_groups);
-
-	GroupFlags::Clear();
 
 	_initialized = true;
 
@@ -1562,6 +1483,8 @@ void Shorthair::SendOOB(const u8 *data, int len) {
 // Called once per tick, about 10-20 ms
 void Shorthair::Tick() {
 	const u32 now = _clock.msec();
+
+	_last_tick = now;
 
 	const int recovery_time = now - _last_swap_time;
 	int expected_sent = _redundant_count;

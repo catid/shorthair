@@ -92,12 +92,15 @@ struct Settings {
 	// Good default: 1350 bytes
 	int max_data_size;			// Maximum data size in bytes
 
+	// Good default: true
+	bool conserve_bandwidth;	// Be conservative with bandwidth?
+
 	// Implement this interface to allow Shorthair to send and deliver packets
 	IShorthair *interface;		// Interface
 };
 
 
-class Shorthair : protected GroupFlags {
+class Shorthair {
 	// Initialized flag
 	bool _initialized;
 
@@ -130,7 +133,7 @@ private:
 
 	// Flag to attach stats to the next outgoing packet
 	bool _send_stats;
-	u32 _last_stats;
+	u32 _last_stats, _last_tick;
 
 	Encoder _encoder;
 
@@ -158,20 +161,6 @@ protected:
 
 	// On receiving a data packet
 	void OnData(u8 *pkt, int len);
-
-	// From GroupFlags
-	virtual void OnGroupTimeout(const u8 group_code);
-
-	CAT_INLINE void openGroup(CodeGroup *group, int code_group) {
-		group->Open(_clock.msec());
-		GroupFlags::SetOpen(code_group);
-	}
-
-	CAT_INLINE void closeGroup(CodeGroup *group, int code_group) {
-		group->Close(_allocator);
-		GroupFlags::SetDone(code_group);
-		GroupFlags::ResetOpen(code_group);
-	}
 
 public:
 	CAT_INLINE Shorthair() {

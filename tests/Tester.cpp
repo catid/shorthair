@@ -7,7 +7,7 @@ using namespace shorthair;
 #include <iomanip>
 using namespace std;
 
-#define SLOW_TESTER
+//#define SLOW_TESTER
 
 #ifdef SLOW_TESTER
 #define TICK_RATE 150
@@ -96,7 +96,7 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if ((_prng->Generate() & 15) < 7) {
+	if ((_prng->Generate() % 100) < 10) {
 		VERBOSE(cout << "RAWR PACKET LOSS -- Dropping packet with bytes = " << bytes << endl);
 		return;
 	}
@@ -111,7 +111,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, MersenneTwister *prng) {
 	_prng = prng;
 
 	Settings settings;
-	settings.target_loss = 0.0001;
+	settings.target_loss = 0.03;
 	settings.max_delay = 100;
 	settings.max_data_size = 1350;
 	settings.interface = this;
@@ -191,9 +191,10 @@ void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
 	_prng = prng;
 
 	Settings settings;
-	settings.target_loss = 0.0001;
+	settings.target_loss = 0.03;
 	settings.max_delay = 100;
 	settings.max_data_size = 1350;
+	settings.conserve_bandwidth = true;
 	settings.interface = this;
 
 	_codec.Initialize(settings);

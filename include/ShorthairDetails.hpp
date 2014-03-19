@@ -74,6 +74,7 @@ static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest pa
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 static const int NUM_CODE_GROUPS = 256;
+static const u32 GROUP_TIMEOUT = 10000; // 10 seconds until partial data is dropped
 
 // Loss estimate clamp values
 static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;
@@ -131,14 +132,14 @@ struct Packet : BatchHead {
 //// CodeGroup
 
 struct CodeGroup {
-	// Group is open?
-	bool open;
+	// Last update tick timestamp
+	u32 last_update;
 
 	// Largest ID seen for each code group, for decoding the ID
 	int largest_id;
 
 	// Largest seen data length
-	int largest_len;
+	int largest_len; // -1 indicates recovery completed
 
 	// Largest seen block count for each code group
 	int block_count;
@@ -148,7 +149,7 @@ struct CodeGroup {
 
 	// Received symbol counts
 	int original_seen;
-	int total_seen;
+	int total_seen; // Nonzero indicates needs to be cleaned
 
 	// Original symbols
 	Packet *head, *tail;
@@ -166,61 +167,18 @@ struct CodeGroup {
 		return total_seen >= block_count;
 	}
 
-	void Open(u32 ms);
-	void Close(ReuseAllocator &allocator);
+	void Clean(ReuseAllocator &allocator);
+
+	CAT_INLINE bool IsDone() {
+		return (largest_len == -1);
+	}
+
+	CAT_INLINE void MarkDone() {
+		largest_len = -1;
+	}
 
 	void AddRecovery(Packet *p);
 	void AddOriginal(Packet *p);
-};
-
-
-
-//// GroupFlags
-
-class GroupFlags {
-	// 256 bits
-	u32 _open[8];
-	u32 _done[8];
-
-public:
-	CAT_INLINE void Clear() {
-		CAT_OBJCLR(_open);
-		CAT_OBJCLR(_done);
-	}
-
-	CAT_INLINE void SetOpen(const u8 group) {
-		_open[group >> 5] |= 1 << (group & 31);
-	}
-
-	CAT_INLINE void ResetOpen(const u8 group) {
-		_open[group >> 5] &= ~(1 << (group & 31));
-	}
-
-	CAT_INLINE bool IsOpen(const u8 group) {
-		// If bit is set return true
-		const u32 mask = 1 << (group & 31);
-		return (_open[group >> 5] & mask) != 0;
-	}
-
-	CAT_INLINE void SetDone(const u8 group) {
-		_done[group >> 5] |= 1 << (group & 31);
-	}
-
-	CAT_INLINE void ResetDone(const u8 group) {
-		_done[group >> 5] &= ~(1 << (group & 31));
-	}
-
-	CAT_INLINE bool IsDone(const u8 group) {
-		// If bit is set return true
-		const u32 mask = 1 << (group & 31);
-		return (_done[group >> 5] & mask) != 0;
-	}
-
-protected:
-	virtual void OnGroupTimeout(const u8 group) = 0;
-
-	// Calls OnGroupTimeout when a timeout is detected
-	void ClearOpposite(const u8 group);
 };
 
 
@@ -369,13 +327,6 @@ public:
 	void EncodeQueued(int recovery_count);
 
 	int GenerateRecoveryBlock(u8 *buffer);
-};
-
-/*
- * Decoder based on the Longhair CRS codec
- */
-
-class Decoder {
 };
 
 

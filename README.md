@@ -16,11 +16,37 @@ Please take a look at my presentation on Erasure codes for more motivation:
 [Erasure Codes in Software](https://github.com/catid/shorthair/blob/master/docs/ErasureCodesInSoftware.pdf)
 
 
-##### Building: Quick Setup
+### Building: Quick Setup
 
 The [shorthair-mobile](https://github.com/catid/shorthair/tree/master/shorthair-mobile)
 directory contains an easy-to-import set of C code that also
 builds properly for mobile devices and Windows-based computers.
+
+
+#### API
+
+This library is only available in C++ code, which you can wrap for your favorite language.
+
+Your C++ code should have a class instance that derives from IShorthair and
+implements its interface:
+
+~~~
+	// Called with the latest data packet from remote host
+	virtual void OnPacket(u8 *packet, int bytes);
+
+	// Called with the latest OOB packet from remote host
+	virtual void OnOOB(u8 *packet, int bytes);
+
+	// Send raw data to remote host over UDP socket
+	virtual void SendData(u8 *buffer, int bytes);
+~~~
+
+
+#### Thread-Safety
+
+It is safe to call `Send` and `SendOOB` from any thread.
+
+The same thread that calls `Recv` should also be calling `Tick`.
 
 
 #### Features:
