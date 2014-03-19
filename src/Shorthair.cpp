@@ -1553,20 +1553,23 @@ void Shorthair::Tick() {
 			// Calculate number of redundant packets to send this time
 			int R = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
 
-			/*
-			 * The redundant count should not be larger than the original
-			 * number of data packets, unless the amount of data is small.
-			 */
+			// If we care about bandwidth,
+			if (_settings.conserve_bandwidth) {
+				/*
+				 * The redundant count should not be larger than the original
+				 * number of data packets, unless the amount of data is small.
+				 */
 
-			// If there are a lot of recovery packets,
-			if (R > N) {
-				// If there are also a lot of data packets,
-				if (N >= 3) {
-					// Do not do more than double the bandwidth
-					R = N;
-				} else if (R > 3) {
-					// For smaller sets of data it is okay to multiply the data to meet a goal
-					R = 3;
+				// If there are a lot of recovery packets,
+				if (R > N) {
+					// If there are also a lot of data packets,
+					if (N >= 3) {
+						// Do not do more than double the bandwidth
+						R = N;
+					} else if (R > 3) {
+						// For smaller sets of data it is okay to multiply the data to meet a goal
+						R = 3;
+					}
 				}
 			}
 

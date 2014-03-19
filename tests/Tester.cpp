@@ -115,6 +115,7 @@ void ZeroLossServer::Accept(ZeroLossClient *client, MersenneTwister *prng) {
 	settings.max_delay = 100;
 	settings.max_data_size = 1350;
 	settings.interface = this;
+	settings.conserve_bandwidth = true;
 
 	_codec.Initialize(settings);
 
