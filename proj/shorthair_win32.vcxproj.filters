@@ -31,6 +31,9 @@
     <Filter Include="Source Files\longhair">
       <UniqueIdentifier>{4e640c99-09a5-49c9-9f3e-3ef41f171444}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\tests">
+      <UniqueIdentifier>{43e7adcf-1b54-4852-a67d-28e0c0d2b1b0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\Shorthair.cpp">
@@ -47,6 +50,24 @@
     </ClCompile>
     <ClCompile Include="..\longhair\src\cauchy_256.cpp">
       <Filter>Source Files\longhair</Filter>
+    </ClCompile>
+    <ClCompile Include="..\tests\Tester.cpp">
+      <Filter>Source Files\tests</Filter>
+    </ClCompile>
+    <ClCompile Include="..\libcat\Clock.cpp">
+      <Filter>Source Files\libcat</Filter>
+    </ClCompile>
+    <ClCompile Include="..\libcat\MemSwap.cpp">
+      <Filter>Source Files\libcat</Filter>
+    </ClCompile>
+    <ClCompile Include="..\libcat\MemXOR.cpp">
+      <Filter>Source Files\libcat</Filter>
+    </ClCompile>
+    <ClCompile Include="..\libcat\ReuseAllocator.cpp">
+      <Filter>Source Files\libcat</Filter>
+    </ClCompile>
+    <ClCompile Include="..\libcat\Enforcer.cpp">
+      <Filter>Source Files\libcat</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -73,6 +94,24 @@
     </ClInclude>
     <ClInclude Include="..\longhair\include\cauchy_256.h">
       <Filter>Header Files\longhair</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\Clock.hpp">
+      <Filter>Header Files\libcat</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\MemSwap.hpp">
+      <Filter>Header Files\libcat</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\MemXOR.hpp">
+      <Filter>Header Files\libcat</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\ReuseAllocator.hpp">
+      <Filter>Header Files\libcat</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\Enforcer.hpp">
+      <Filter>Header Files\libcat</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libcat\AbyssinianPRNG.hpp">
+      <Filter>Header Files\libcat</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

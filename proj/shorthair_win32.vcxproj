@@ -120,19 +120,31 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\libcat\BitMath.cpp" />
+    <ClCompile Include="..\libcat\Clock.cpp" />
     <ClCompile Include="..\libcat\EndianNeutral.cpp" />
+    <ClCompile Include="..\libcat\Enforcer.cpp" />
+    <ClCompile Include="..\libcat\MemSwap.cpp" />
+    <ClCompile Include="..\libcat\MemXOR.cpp" />
     <ClCompile Include="..\libcat\Mutex.cpp" />
+    <ClCompile Include="..\libcat\ReuseAllocator.cpp" />
     <ClCompile Include="..\longhair\src\cauchy_256.cpp" />
     <ClCompile Include="..\src\Shorthair.cpp" />
+    <ClCompile Include="..\tests\Tester.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\include\Shorthair.hpp" />
     <ClInclude Include="..\include\ShorthairDetails.hpp" />
+    <ClInclude Include="..\libcat\AbyssinianPRNG.hpp" />
     <ClInclude Include="..\libcat\BitMath.hpp" />
+    <ClInclude Include="..\libcat\Clock.hpp" />
     <ClInclude Include="..\libcat\Config.hpp" />
     <ClInclude Include="..\libcat\EndianNeutral.hpp" />
+    <ClInclude Include="..\libcat\Enforcer.hpp" />
+    <ClInclude Include="..\libcat\MemSwap.hpp" />
+    <ClInclude Include="..\libcat\MemXOR.hpp" />
     <ClInclude Include="..\libcat\Mutex.hpp" />
     <ClInclude Include="..\libcat\Platform.hpp" />
+    <ClInclude Include="..\libcat\ReuseAllocator.hpp" />
     <ClInclude Include="..\longhair\include\cauchy_256.h" />
   </ItemGroup>
   <ItemGroup>

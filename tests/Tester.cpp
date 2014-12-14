@@ -1,5 +1,5 @@
 #include "Shorthair.hpp"
-#include "MersenneTwister.hpp"
+#include "AbyssinianPRNG.hpp"
 using namespace cat;
 using namespace shorthair;
 
@@ -31,7 +31,7 @@ class ZeroLossServer : IShorthair {
 	u32 _sent;
 	Shorthair _codec;
 	ZeroLossClient *_client;
-	MersenneTwister *_prng;
+    Abyssinian *_prng;
 	u32 _next;
 
 	// Called with the latest data packet from remote host
@@ -49,7 +49,7 @@ public:
 		_next = 0;
 	}
 
-	void Accept(ZeroLossClient *client, MersenneTwister *prng);
+    void Accept(ZeroLossClient *client, Abyssinian *prng);
 	void Tick();
 };
 
@@ -60,7 +60,7 @@ class ZeroLossClient : IShorthair {
 	u32 _received;
 	Shorthair _codec;
 	ZeroLossServer *_server;
-	MersenneTwister *_prng;
+    Abyssinian *_prng;
 
 	// Called with the latest data packet from remote host
 	virtual void OnPacket(u8 *packet, int bytes);
@@ -76,7 +76,7 @@ public:
 		_received = 0;
 	}
 
-	void Connect(ZeroLossServer *server, MersenneTwister *prng);
+    void Connect(ZeroLossServer *server, Abyssinian *prng);
 	void Tick();
 };
 
@@ -96,7 +96,7 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	// Simulate loss
-	if ((_prng->Generate() % 100) < 10) {
+	if ((_prng->Next() % 100) < 10) {
 		VERBOSE(cout << "RAWR PACKET LOSS -- Dropping packet with bytes = " << bytes << endl);
 		return;
 	}
@@ -106,7 +106,8 @@ void ZeroLossServer::SendData(u8 *buffer, int bytes) {
 	_client->_codec.Recv(buffer, bytes);
 }
 
-void ZeroLossServer::Accept(ZeroLossClient *client, MersenneTwister *prng) {
+void ZeroLossServer::Accept(ZeroLossClient *client, Abyssinian *prng)
+{
 	_client = client;
 	_prng = prng;
 
@@ -126,14 +127,15 @@ void ZeroLossServer::Tick() {
 	// Send data at a steady rate
 
 	static const int MAX_SIZE = 1350;
+    static const int MIN_SIZE = 4 + 4;
 	u8 buffer[MAX_SIZE] = {0};
 
 	// >10 "MBPS" if packet payload is 1350 bytes
 	for (int ii = 0; ii < PKTS_PER_TICK; ++ii) {
-		MersenneTwister prng;
+        Abyssinian prng;
 		prng.Initialize(_next);
 
-		int len = _prng->GenerateUnbiased(4 + 4, MAX_SIZE);
+        int len = (_prng->Next() % (MAX_SIZE - MIN_SIZE + 1)) + MIN_SIZE;
 
 		VERBOSE(cout << "TESTER: SENDING PACKET " << _next << " with len = " << len << endl);
 
@@ -142,7 +144,7 @@ void ZeroLossServer::Tick() {
 		*(u32*)(buffer + 4) = len;
 
 		for (int jj = 8; jj < len; ++jj) {
-			buffer[jj] = (u8)prng.Generate();
+			buffer[jj] = (u8)prng.Next();
 		}
 
 		++_sent;
@@ -167,11 +169,11 @@ void ZeroLossClient::OnPacket(u8 *packet, int bytes) {
 
 	CAT_ENFORCE(bytes == len);
 
-	MersenneTwister prng;
+	Abyssinian prng;
 	prng.Initialize(id);
 
-	for (int jj = 8; jj < len; ++jj) {
-		CAT_ENFORCE(packet[jj] == (u8)prng.Generate());
+	for (int jj = 8; jj < (int)len; ++jj) {
+		CAT_ENFORCE(packet[jj] == (u8)prng.Next());
 	}
 
 	++_received;
@@ -187,7 +189,7 @@ void ZeroLossClient::SendData(u8 *buffer, int bytes) {
 	_server->_codec.Recv(buffer, bytes);
 }
 
-void ZeroLossClient::Connect(ZeroLossServer *server, MersenneTwister *prng) {
+void ZeroLossClient::Connect(ZeroLossServer *server, Abyssinian *prng) {
 	_server = server;
 	_prng = prng;
 
@@ -217,7 +219,7 @@ void ZeroLossTest() {
 	Clock clock;
 	clock.OnInitialize();
 
-	MersenneTwister prng;
+	Abyssinian prng;
 	prng.Initialize(0);
 
 	ZeroLossClient client;
