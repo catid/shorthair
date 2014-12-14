@@ -11,3 +11,10 @@
 *.lai
 *.la
 *.a
+
+# Windows Tests Project
+proj/*.sdf
+proj/*.suo
+proj/*.opensdf
+proj/x64/*
+proj/Debug/*
