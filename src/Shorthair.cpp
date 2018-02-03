@@ -1212,11 +1212,7 @@ void Shorthair::OnData(u8 *pkt, int len) {
 
 	// If the group is old,
 	if ((u32)(_last_tick - group->last_update) > GROUP_TIMEOUT) {
-		// If the state is dirty,
-		if (group->total_seen != 0) {
-			// Clean it now
-			group->Clean(_allocator);
-		}
+		group->Clean(_allocator);
 
 		LOG("~~ Opening group %d", (int)code_group);
 	} else if (group->IsDone()) {
@@ -1553,25 +1549,33 @@ void Shorthair::Tick() {
 			// Calculate number of redundant packets to send this time
 			int R = CalculateRedundancy(_loss.GetClamped(), N, _settings.target_loss);
 
-			// If we care about bandwidth,
-			if (_settings.conserve_bandwidth) {
-				/*
-				 * The redundant count should not be larger than the original
-				 * number of data packets, unless the amount of data is small.
-				 */
+            // If there's a reasonable amount of data being sent:
+            if (N >= 3)
+            {
+                float overheadRate = R / (float)N;
 
-				// If there are a lot of recovery packets,
-				if (R > N) {
-					// If there are also a lot of data packets,
-					if (N >= 3) {
-						// Do not do more than double the bandwidth
-						R = N;
-					} else if (R > 3) {
-						// For smaller sets of data it is okay to multiply the data to meet a goal
-						R = 3;
-					}
-				}
-			}
+                // If trying to send too much:
+                if (overheadRate > 0.5f)
+                {
+                    R = N * 1.5f + 1;
+                }
+                // If not sending enough:
+                else if (overheadRate < _settings.min_fec_overhead)
+                {
+                    R = N * (1.f + _settings.min_fec_overhead);
+                }
+
+                // Send at least two packets per swap interval
+                if (R < 2)
+                {
+                    R = 2;
+                }
+            }
+            else
+            {
+                // Send no more than 2 for N < 3
+                R = 2;
+            }
 
 			// NOTE: These packets will be spread out over the swap interval
 			_redundant_count = R;

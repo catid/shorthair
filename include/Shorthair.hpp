@@ -86,14 +86,14 @@ struct Settings {
 	// Good default: 0.0001
 	double target_loss;			// Target packet loss rate
 
+    // Pick 0.0 for low overhead, and 0.2 to be similar to industry solutions for video
+    float min_fec_overhead;    // Minimum FEC overhead to send
+
 	// Good default: 100 ms or RTT/2
 	int max_delay;				// Maximum acceptable delay for recovery
 
 	// Good default: 1350 bytes
 	int max_data_size;			// Maximum data size in bytes
-
-	// Good default: true
-	bool conserve_bandwidth;	// Be conservative with bandwidth?
 
 	// Implement this interface to allow Shorthair to send and deliver packets
 	IShorthair *interface;		// Interface

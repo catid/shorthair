@@ -74,7 +74,7 @@ static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest pa
 static const int MAX_CHUNK_SIZE = 65535; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 static const int NUM_CODE_GROUPS = 256;
-static const u32 GROUP_TIMEOUT = 10000; // 10 seconds until partial data is dropped
+static const u32 GROUP_TIMEOUT = 1000; // 1 second of inactivity until a group is reset
 
 // Loss estimate clamp values
 static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;

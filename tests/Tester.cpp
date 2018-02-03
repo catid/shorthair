@@ -19,6 +19,8 @@ using namespace std;
 #define VERBOSE(x)
 #endif
 
+#define ENABLE_PACKETLOSS
+
 
 //// ZeroLoss Classes
 
@@ -95,11 +97,13 @@ void ZeroLossServer::OnOOB(u8 *packet, int bytes) {
 
 // Send raw data to remote host over UDP socket
 void ZeroLossServer::SendData(u8 *buffer, int bytes) {
+#ifdef ENABLE_PACKETLOSS
 	// Simulate loss
 	if ((_prng->Next() % 100) < 10) {
 		VERBOSE(cout << "RAWR PACKET LOSS -- Dropping packet with bytes = " << bytes << endl);
 		return;
 	}
+#endif
 
 	VERBOSE(cout << "TESTER: RAW SEND DATA LEN = " << bytes << endl);
 
@@ -113,10 +117,10 @@ void ZeroLossServer::Accept(ZeroLossClient *client, Abyssinian *prng)
 
 	Settings settings;
 	settings.target_loss = 0.03;
+    settings.min_fec_overhead = 0.2f;
 	settings.max_delay = 100;
 	settings.max_data_size = 1350;
 	settings.interface = this;
-	settings.conserve_bandwidth = true;
 
 	_codec.Initialize(settings);
 
@@ -197,7 +201,6 @@ void ZeroLossClient::Connect(ZeroLossServer *server, Abyssinian *prng) {
 	settings.target_loss = 0.03;
 	settings.max_delay = 100;
 	settings.max_data_size = 1350;
-	settings.conserve_bandwidth = true;
 	settings.interface = this;
 
 	_codec.Initialize(settings);
