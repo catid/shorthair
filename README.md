@@ -16,16 +16,7 @@ Please take a look at my presentation on Erasure codes for more motivation:
 [Erasure Codes in Software](https://github.com/catid/shorthair/blob/master/docs/ErasureCodesInSoftware.pdf)
 
 
-### Building: Quick Setup
-
-The [shorthair-mobile](https://github.com/catid/shorthair/tree/master/shorthair-mobile)
-directory contains an easy-to-import set of C code that also
-builds properly for mobile devices and Windows-based computers.
-
-
-#### API
-
-This library is only available in C++ code, which you can wrap for your favorite language.
+#### Usage
 
 Your C++ code should have a class instance that derives from IShorthair and
 implements its interface:
@@ -63,6 +54,8 @@ The same thread that calls `Recv` should also be calling `Tick`.
 
 #### Credits
 
-This software was written entirely by myself ( Christopher A. Taylor <mrcatid@gmail.com> ).  If you
-find it useful and would like to buy me a coffee, consider [tipping](https://www.gittip.com/catid/).
+Software by Christopher A. Taylor mrcatid@gmail.com
+
+Please reach out if you need support or would like to collaborate on a project.
+
 

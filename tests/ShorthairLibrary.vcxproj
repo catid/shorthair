@@ -18,32 +18,52 @@
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\cauchy_256.cpp" />
+    <ClCompile Include="..\gf256.cpp" />
+    <ClCompile Include="..\PacketAllocator.cpp" />
+    <ClCompile Include="..\Shorthair.cpp" />
+    <ClCompile Include="..\SiameseTools.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\cauchy_256.h" />
+    <ClInclude Include="..\Counter.h" />
+    <ClInclude Include="..\gf256.h" />
+    <ClInclude Include="..\PacketAllocator.h" />
+    <ClInclude Include="..\Shorthair.hpp" />
+    <ClInclude Include="..\ShorthairDetails.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\cauchy_tables_256.inc" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{7A233523-9F28-42A0-8F80-E3A00206D833}</ProjectGuid>
     <RootNamespace>shorthair_win32</RootNamespace>
+    <ProjectName>ShorthairLibrary</ProjectName>
+    <WindowsTargetPlatformVersion>8.1</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v140</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v140</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v140</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v140</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -118,38 +138,6 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup>
-    <ClCompile Include="..\libcat\BitMath.cpp" />
-    <ClCompile Include="..\libcat\Clock.cpp" />
-    <ClCompile Include="..\libcat\EndianNeutral.cpp" />
-    <ClCompile Include="..\libcat\Enforcer.cpp" />
-    <ClCompile Include="..\libcat\MemSwap.cpp" />
-    <ClCompile Include="..\libcat\MemXOR.cpp" />
-    <ClCompile Include="..\libcat\Mutex.cpp" />
-    <ClCompile Include="..\libcat\ReuseAllocator.cpp" />
-    <ClCompile Include="..\longhair\src\cauchy_256.cpp" />
-    <ClCompile Include="..\src\Shorthair.cpp" />
-    <ClCompile Include="..\tests\Tester.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="..\include\Shorthair.hpp" />
-    <ClInclude Include="..\include\ShorthairDetails.hpp" />
-    <ClInclude Include="..\libcat\AbyssinianPRNG.hpp" />
-    <ClInclude Include="..\libcat\BitMath.hpp" />
-    <ClInclude Include="..\libcat\Clock.hpp" />
-    <ClInclude Include="..\libcat\Config.hpp" />
-    <ClInclude Include="..\libcat\EndianNeutral.hpp" />
-    <ClInclude Include="..\libcat\Enforcer.hpp" />
-    <ClInclude Include="..\libcat\MemSwap.hpp" />
-    <ClInclude Include="..\libcat\MemXOR.hpp" />
-    <ClInclude Include="..\libcat\Mutex.hpp" />
-    <ClInclude Include="..\libcat\Platform.hpp" />
-    <ClInclude Include="..\libcat\ReuseAllocator.hpp" />
-    <ClInclude Include="..\longhair\include\cauchy_256.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\longhair\src\cauchy_tables_256.inc" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
