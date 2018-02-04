@@ -167,7 +167,7 @@ static const int SHORTHAIR_OVERHEAD = RECOVERY_OVERHEAD; // 8 bytes + longest pa
 static const int MAX_CHUNK_SIZE = 2000; // Largest allowed packet chunk size
 static const int MIN_CODE_DURATION = 100; // Milliseconds
 static const int NUM_CODE_GROUPS = 256;
-static const uint32_t GROUP_TIMEOUT = 1000; // 1 second of inactivity until a group is reset
+static const uint64_t GROUP_TIMEOUT = 1000; // 1 second of inactivity until a group is reset
 
 // Loss estimate clamp values
 static const float SHORTHAIR_MIN_LOSS_ESTIMATE = 0.03f;
@@ -301,7 +301,7 @@ struct Packet : BatchHead {
 
 struct CodeGroup {
     // Last update tick timestamp
-    uint32_t last_update;
+    uint64_t last_update;
 
     // Largest ID seen for each code group, for decoding the ID
     int largest_id;

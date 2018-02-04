@@ -15,12 +15,12 @@ using namespace std;
 #define PKTS_PER_TICK 1
 #define VERBOSE(x) x
 #else
-#define TICK_RATE 1
+#define TICK_RATE 5
 #define PKTS_PER_TICK 1
 #define VERBOSE(x)
 #endif
 
-#define ENABLE_PACKETLOSS 0.2f
+#define ENABLE_PACKETLOSS 0.1f
 
 
 //// ZeroLoss Classes

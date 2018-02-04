@@ -780,7 +780,7 @@ void Shorthair::OnData(uint8_t *pkt, int len) {
     _last_group = code_group;
 
     // If the group is old,
-    if ((uint32_t)(_last_tick - group->last_update) > GROUP_TIMEOUT) {
+    if ((uint64_t)(_last_tick - group->last_update) > GROUP_TIMEOUT) {
         group->Clean(&_allocator);
 
         LOG("~~ Opening group %d", (int)code_group);
@@ -1024,7 +1024,7 @@ void Shorthair::Send(const void *data, int len) {
 // Send an OOB packet, first byte is type code
 void Shorthair::SendOOB(const uint8_t *data, int len) {
     SIAMESE_DEBUG_ASSERT(len > 0);
-    SIAMESE_DEBUG_ASSERT(1 + len <= _oob_buffer.GetSize());
+    SIAMESE_DEBUG_ASSERT(1 + (unsigned)len <= _oob_buffer.GetSize());
 
     uint8_t *pkt = _oob_buffer.GetPtr();
     uint8_t *pkt_front = pkt;
@@ -1060,16 +1060,18 @@ void Shorthair::SendOOB(const uint8_t *data, int len) {
 
 // Called once per tick, about 10-20 ms
 void Shorthair::Tick() {
-    const uint32_t now = siamese::GetTimeMsec();
+    const uint64_t now = siamese::GetTimeMsec();
 
     _last_tick = now;
 
-    const int recovery_time = now - _last_swap_time;
+    const int64_t tick_interval = now - _last_swap_time;
     int expected_sent = _redundant_count;
-    uint32_t max_delay = _settings.max_delay;
+    int max_delay = _settings.max_delay;
+    if (max_delay < 10)
+        max_delay = 10;
 
     // If it is time to send stats again,
-    if ((uint32_t)(now - _last_stats) > (uint32_t)STAT_TRANSMIT_INTERVAL) {
+    if ((uint64_t)(now - _last_stats) > (uint64_t)STAT_TRANSMIT_INTERVAL) {
         _last_stats = now;
 
         // If stats still not sent from last time,
@@ -1096,8 +1098,8 @@ void Shorthair::Tick() {
     }
 
     // If not swapping the encoder this tick,
-    if ((uint32_t)recovery_time < max_delay) {
-        int elapsed = ((_redundant_count + 1) * recovery_time) / max_delay;
+    if (tick_interval < (int64_t)max_delay) {
+        int elapsed = (int)(((_redundant_count + 1) * tick_interval) / (unsigned)max_delay);
 
         // Pick min(_redundant_count, elapsed)
         if (expected_sent > elapsed) {
@@ -1121,11 +1123,11 @@ void Shorthair::Tick() {
     }
 
     // If it is time to swap the encoder,
-    if ((uint32_t)recovery_time >= max_delay) {
+    if ((uint64_t)tick_interval >= (uint64_t)max_delay) {
         _last_swap_time = now;
 
         // Packet count
-        const int N = _encoder.GetCurrentCount();
+        const unsigned N = (unsigned)_encoder.GetCurrentCount();
 
         if (N > 0) {
             // Calculate number of redundant packets to send this time
@@ -1133,14 +1135,14 @@ void Shorthair::Tick() {
             const float plr = _loss.GetClamped();
 
             // If in region where approximation works:
-            int R;
+            unsigned R;
             if (((N * plr >= 10.f && N * (1 - plr) >= 10.f)))
             {
                 R = CalculateApproximate(plr, N, 0.001f);
             }
             else
             {
-                R = N * 3 * plr;
+                R = (unsigned)(N * 3 * plr);
             }
 
             // If there's a reasonable amount of data being sent:
@@ -1151,12 +1153,12 @@ void Shorthair::Tick() {
                 // If trying to send too much:
                 if (overheadRate > 0.5f)
                 {
-                    R = N * 1.5f + 1;
+                    R = (unsigned)(N * 1.5f) + 1;
                 }
                 // If not sending enough:
                 else if (overheadRate < _settings.min_fec_overhead)
                 {
-                    R = N * (1.f + _settings.min_fec_overhead);
+                    R = (unsigned)(N * (1.f + _settings.min_fec_overhead));
                 }
 
                 // Send at least two packets per swap interval
@@ -1172,7 +1174,7 @@ void Shorthair::Tick() {
             }
 
             // NOTE: These packets will be spread out over the swap interval
-            _redundant_count = R;
+            _redundant_count = (int)R;
             _redundant_sent = 0;
 
             // Select next code group

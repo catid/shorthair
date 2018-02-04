@@ -131,12 +131,12 @@ private:
     siamese::LightVector<uint8_t> _oob_buffer;
 
     // Rate of swapping and redundant symbol counter
-    uint32_t _last_swap_time;
+    uint64_t _last_swap_time;
     int _redundant_count, _redundant_sent;
 
     // Flag to attach stats to the next outgoing packet
     bool _send_stats;
-    uint32_t _last_stats, _last_tick;
+    uint64_t _last_stats, _last_tick;
 
     Encoder _encoder;
 
