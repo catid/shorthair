@@ -16,9 +16,18 @@ Please take a look at my presentation on Erasure codes for more motivation:
 [Erasure Codes in Software](https://github.com/catid/shorthair/blob/master/docs/ErasureCodesInSoftware.pdf)
 
 
-#### Usage
+#### Features
 
 It is designed for applications that send no more than 2000 packets per second (about 2 MB/s).  Beyond that, it will hit asserts and not be able to protect the traffic.
+
++ Full-duplex communication over a lossy channel.
++ Automatically calculates the amount of redundancy to add based on channel conditions.
++ Uses a fast Reed-Solomon block codec: Longhair
++ It supports variable-length data packets.
++ Overhead is 5 bytes/packet.
+
+
+#### Usage
 
 Step 1: Add the source code to your project.  #include "Shorthair.hpp"
 
@@ -82,16 +91,6 @@ Step 5: Periodically call `ShorthairCodec::Tick()`.  Around a 10-20 ms interval 
 Step 6: When a packet is received, call `ShorthairCodec::Recv()` with the raw UDP packet data.
 
 The ShorthairCodec object is not thread-safe, so be sure to hold a lock if multiple threads are using it.
-
-
-#### Features:
-
-+ Uses a fast Reed-Solomon codec: Longhair.
-+ Full-duplex communication over a lossy channel.
-+ Adds a dial to control packet loss to any acceptable rate for applications over UDP.
-+ Calculates and generates precisely the amount of redundancy required to achieve the target loss rate.
-+ It supports variable-length data packets.
-+ Overhead is 5 bytes/packet.
 
 
 #### Credits
