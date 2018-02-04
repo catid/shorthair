@@ -68,6 +68,7 @@ namespace cat {
 namespace shorthair {
 
 
+// Interface to implement in the application code
 class IShorthair {
 public:
     // Called with the latest data packet from remote host
@@ -80,7 +81,7 @@ public:
     virtual void SendData(uint8_t *buffer, int bytes) = 0;
 };
 
-
+// Settings structure to provide to Initialize()
 struct Settings {
     // Minimum FEC overhead to send
     // Pick 0.0 for low overhead
@@ -105,8 +106,40 @@ struct Settings {
     }
 };
 
+// Shorthair codec object
+class ShorthairCodec {
+public:
+    // On startup:
+    bool Initialize(const Settings &settings);
 
-class Shorthair {
+    // Cleanup
+    void Finalize();
+
+    // Send a new packet
+    void Send(const void *data, std::size_t len);
+
+    // Send an OOB packet, first byte is type code
+    void SendOOB(const void *data, std::size_t len);
+
+    // Called once per tick, about 10-20 ms
+    void Tick();
+
+    // On packet received, buffer will be modified
+    void Recv(void *pkt, int len);
+
+    SIAMESE_FORCE_INLINE float GetLoss() {
+        return _loss.GetReal();
+    }
+
+    SIAMESE_FORCE_INLINE ShorthairCodec() {
+        _initialized = false;
+    }
+
+    SIAMESE_FORCE_INLINE virtual ~ShorthairCodec() {
+        Finalize();
+    }
+
+private:
     // Initialized flag
     bool _initialized;
 
@@ -116,7 +149,6 @@ class Shorthair {
     // Packet buffers are allocated with room for the protocol overhead + data
     pktalloc::Allocator _allocator;
 
-private:
     // Statistics
     LossEstimator _loss;
 
@@ -140,7 +172,6 @@ private:
 
     Encoder _encoder;
 
-protected:
     // Send a check symbol
     bool SendCheckSymbol();
 
@@ -150,7 +181,6 @@ protected:
     // On receiving an out-of-band packet
     void OnOOB(uint8_t flags, uint8_t *pkt, int len);
 
-private:
     LossStatistics _stats;
 
     // Next expected code group
@@ -159,42 +189,10 @@ private:
     // Code groups
     CodeGroup _groups[NUM_CODE_GROUPS];
 
-protected:
     void RecoverGroup(CodeGroup *group);
 
     // On receiving a data packet
     void OnData(uint8_t *pkt, int len);
-
-public:
-    SIAMESE_FORCE_INLINE Shorthair() {
-        _initialized = false;
-    }
-
-    SIAMESE_FORCE_INLINE virtual ~Shorthair() {
-        Finalize();
-    }
-
-    SIAMESE_FORCE_INLINE float GetLoss() {
-        return _loss.GetReal();
-    }
-
-    // On startup:
-    bool Initialize(const Settings &settings);
-
-    // Cleanup
-    void Finalize();
-
-    // Send a new packet
-    void Send(const void *data, int len);
-
-    // Send an OOB packet, first byte is type code
-    void SendOOB(const uint8_t *data, int len);
-
-    // Called once per tick, about 10-20 ms
-    void Tick();
-
-    // On packet received, buffer will be modified
-    void Recv(void *pkt, int len);
 };
 
 

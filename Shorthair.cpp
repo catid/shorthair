@@ -628,7 +628,7 @@ int Encoder::GenerateRecoveryBlock(uint8_t *pkt) {
 //// Shorthair : Encoder
 
 // Send a check symbol
-bool Shorthair::SendCheckSymbol() {
+bool ShorthairCodec::SendCheckSymbol() {
     uint8_t *pkt = _sym_buffer.GetPtr();
     int len = _encoder.GenerateRecoveryBlock(pkt + 3);
 
@@ -648,7 +648,7 @@ bool Shorthair::SendCheckSymbol() {
     return true;
 }
 
-void Shorthair::UpdateLoss(uint32_t seen, uint32_t count) {
+void ShorthairCodec::UpdateLoss(uint32_t seen, uint32_t count) {
     SIAMESE_DEBUG_ASSERT(seen <= count);
     if (seen > count) {
         // Ignore invalid data
@@ -661,7 +661,7 @@ void Shorthair::UpdateLoss(uint32_t seen, uint32_t count) {
     }
 }
 
-void Shorthair::OnOOB(uint8_t flags, uint8_t *pkt, int len) {
+void ShorthairCodec::OnOOB(uint8_t flags, uint8_t *pkt, int len) {
     // If it contains a pong message,
     if (flags & 1) {
         // If truncated,
@@ -701,7 +701,7 @@ void Shorthair::OnOOB(uint8_t flags, uint8_t *pkt, int len) {
 
 //// Shorthair : Decoder
 
-void Shorthair::RecoverGroup(CodeGroup *group) {
+void ShorthairCodec::RecoverGroup(CodeGroup *group) {
     // The block size will be the largest data chunk we have
     const int block_size = group->largest_len;
     const int k = group->block_count;
@@ -765,7 +765,7 @@ void Shorthair::RecoverGroup(CodeGroup *group) {
 }
 
 // On receiving a data packet
-void Shorthair::OnData(uint8_t *pkt, int len) {
+void ShorthairCodec::OnData(uint8_t *pkt, int len) {
     if (len <= PROTOCOL_OVERHEAD) {
         return;
     }
@@ -906,7 +906,7 @@ void Shorthair::OnData(uint8_t *pkt, int len) {
 //// Shorthair: Interface
 
 // On startup:
-bool Shorthair::Initialize(const Settings &settings) {
+bool ShorthairCodec::Initialize(const Settings &settings) {
     Finalize();
 
     cauchy_256_init();
@@ -952,7 +952,7 @@ bool Shorthair::Initialize(const Settings &settings) {
 }
 
 // Cleanup
-void Shorthair::Finalize() {
+void ShorthairCodec::Finalize() {
     if (_initialized) {
         // NOTE: The allocator object will free allocated memory in its dtor
 
@@ -963,7 +963,7 @@ void Shorthair::Finalize() {
 }
 
 // Send original data
-void Shorthair::Send(const void *data, int len) {
+void ShorthairCodec::Send(const void *data, std::size_t len) {
     if (len > _settings.max_data_size)
     {
         SIAMESE_DEBUG_BREAK(); // Invalid input
@@ -973,10 +973,10 @@ void Shorthair::Send(const void *data, int len) {
     // Allocate sent packet buffer
     Packet *p = (Packet*)_allocator.Allocate(sizeof(Packet) + 2 + _settings.max_data_size);
     p->batch_next = 0;
-    p->len = len;
+    p->len = (uint16_t)len;
 
     uint8_t *pkt = p->data;
-    int pkt_len = len + ORIGINAL_OVERHEAD;
+    int pkt_len = (int)len + ORIGINAL_OVERHEAD;
 
     // Insert sequence number at the front
     WriteU16_LE(pkt, _out_seq++);
@@ -1022,13 +1022,13 @@ void Shorthair::Send(const void *data, int len) {
 }
 
 // Send an OOB packet, first byte is type code
-void Shorthair::SendOOB(const uint8_t *data, int len) {
+void ShorthairCodec::SendOOB(const void *data, std::size_t len) {
     SIAMESE_DEBUG_ASSERT(len > 0);
     SIAMESE_DEBUG_ASSERT(1 + (unsigned)len <= _oob_buffer.GetSize());
 
     uint8_t *pkt = _oob_buffer.GetPtr();
     uint8_t *pkt_front = pkt;
-    int pkt_len = len + 3;
+    int pkt_len = (int)len + 3;
 
     // Insert sequence number at the front
     WriteU16_LE(pkt, _out_seq++);
@@ -1059,7 +1059,7 @@ void Shorthair::SendOOB(const uint8_t *data, int len) {
 }
 
 // Called once per tick, about 10-20 ms
-void Shorthair::Tick() {
+void ShorthairCodec::Tick() {
     const uint64_t now = siamese::GetTimeMsec();
 
     _last_tick = now;
@@ -1189,7 +1189,7 @@ void Shorthair::Tick() {
 }
 
 // On packet received
-void Shorthair::Recv(void *vpkt, int len) {
+void ShorthairCodec::Recv(void *vpkt, int len) {
     uint8_t *pkt = static_cast<uint8_t*>( vpkt );
 
     // If the header is not truncated,

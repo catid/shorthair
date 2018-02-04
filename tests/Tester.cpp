@@ -16,7 +16,7 @@ using namespace std;
 #define VERBOSE(x) x
 #else
 #define TICK_RATE 5
-#define PKTS_PER_TICK 1
+#define PKTS_PER_TICK 10
 #define VERBOSE(x)
 #endif
 
@@ -32,7 +32,7 @@ class ZeroLossServer : IShorthair {
     friend class ZeroLossClient;
 
     uint32_t _sent;
-    Shorthair _codec;
+    ShorthairCodec _codec;
     ZeroLossClient *_client;
     siamese::PCGRandom* _prng;
     uint32_t _next;
@@ -61,7 +61,7 @@ class ZeroLossClient : IShorthair {
     friend class ZeroLossServer;
 
     uint32_t _received;
-    Shorthair _codec;
+    ShorthairCodec _codec;
     ZeroLossServer *_server;
     siamese::PCGRandom *_prng;
 
@@ -203,7 +203,7 @@ void ZeroLossClient::Connect(ZeroLossServer *server, siamese::PCGRandom *prng) {
     Settings settings;
     settings.min_fec_overhead = 0.2f;
     settings.max_delay = 100;
-    settings.max_data_size = 1350;
+    settings.max_data_size = 1400;
     settings.interface_ptr = this;
 
     _codec.Initialize(settings);
