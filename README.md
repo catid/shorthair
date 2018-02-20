@@ -1,3 +1,9 @@
+# Shorthair has been deprecated by CauchyCaterpillar
+
+Please check out the newer codec here:
+https://github.com/catid/CauchyCaterpillar
+
+
 # Shorthair Low-Latency Networking
 
 Shorthair is a portable C++ library uses the [Longhair library](https://github.com/catid/longhair) to provide low-latency loss-recovery, which uses extra bandwidth to make almost any unreliable packet channel suitable for real-time communication.
