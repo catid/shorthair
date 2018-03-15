@@ -1,6 +1,6 @@
 /** \file
     \brief Counter Math
-    \copyright Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
+    \copyright Copyright (c) 2017-2018 Christopher A. Taylor.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -306,7 +306,9 @@ public:
 
 /// Convenience declarations
 typedef Counter<uint64_t, 64> Counter64;
+typedef Counter<uint64_t, 56> Counter56;
 typedef Counter<uint64_t, 48> Counter48;
+typedef Counter<uint64_t, 40> Counter40;
 typedef Counter<uint32_t, 32> Counter32;
 typedef Counter<uint32_t, 24> Counter24;
 typedef Counter<uint16_t, 16> Counter16;
@@ -318,3 +320,33 @@ static_assert(sizeof(Counter8) == 1, "Unexpected padding");
 static_assert(sizeof(Counter16) == 2, "Unexpected padding");
 static_assert(sizeof(Counter32) == 4, "Unexpected padding");
 static_assert(sizeof(Counter64) == 8, "Unexpected padding");
+
+/**
+    CounterExpand()
+
+    This is a common utility function that expands a 1-7 byte truncated
+    counter back into a 64-bit (8 byte) counter, based on the largest
+    counter value seen so far.
+
+    Preconditions: bytes > 0 && bytes < 8
+*/
+COUNTER_FORCE_INLINE Counter64 CounterExpand(
+    uint64_t largest,
+    uint64_t partial,
+    unsigned bytes)
+{
+    switch (bytes)
+    {
+    case 1: return Counter64::ExpandFromTruncated(largest, Counter8((uint8_t)partial));
+    case 2: return Counter64::ExpandFromTruncated(largest, Counter16((uint16_t)partial));
+    case 3: return Counter64::ExpandFromTruncated(largest, Counter24((uint32_t)partial));
+    case 4: return Counter64::ExpandFromTruncated(largest, Counter32((uint32_t)partial));
+    case 5: return Counter64::ExpandFromTruncated(largest, Counter40(partial));
+    case 6: return Counter64::ExpandFromTruncated(largest, Counter48(partial));
+    case 7: return Counter64::ExpandFromTruncated(largest, Counter56(partial));
+    default:
+        break;
+    }
+
+    return 0;
+}

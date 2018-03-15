@@ -1,6 +1,6 @@
 /** \file
     \brief Custom Memory Allocator for Packet Data
-    \copyright Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
+    \copyright Copyright (c) 2017-2018 Christopher A. Taylor.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -53,14 +53,13 @@
 */
 
 #include <stdint.h>
+#include <new>
 
 #ifdef _WIN32
     #include <intrin.h> // __popcnt64
 #endif
 
-
 namespace pktalloc {
-
 
 
 //------------------------------------------------------------------------------
@@ -205,13 +204,15 @@ struct CustomBitSet
 
     void ClearAll()
     {
-        for (unsigned i = 0; i < kWords; ++i)
+        for (unsigned i = 0; i < kWords; ++i) {
             Words[i] = 0;
+        }
     }
     void SetAll()
     {
-        for (unsigned i = 0; i < kWords; ++i)
+        for (unsigned i = 0; i < kWords; ++i) {
             Words[i] = kAllOnes;
+        }
     }
     void Set(unsigned bit)
     {
@@ -242,8 +243,9 @@ struct CustomBitSet
     {
         static_assert(kWordBits == 64, "Update this");
 
-        if (bitStart >= bitEnd)
+        if (bitStart >= bitEnd) {
             return 0;
+        }
 
         unsigned wordIndex = bitStart / kWordBits;
         const unsigned wordEnd = bitEnd / kWordBits;
@@ -252,20 +254,23 @@ struct CustomBitSet
         WordT word = Words[wordIndex] >> (bitStart % kWordBits);
 
         // Eliminate high bits of last word if there is just one word
-        if (wordEnd == wordIndex)
+        if (wordEnd == wordIndex) {
             return PopCount64(word << (kWordBits - (bitEnd - bitStart)));
+        }
 
         // Count remainder of first word
         unsigned count = PopCount64(word);
 
         // Accumulate popcount of full words
-        while (++wordIndex < wordEnd)
+        while (++wordIndex < wordEnd) {
             count += PopCount64(Words[wordIndex]);
+        }
 
         // Eliminate high bits of last word if there is one
-        unsigned lastWordBits = bitEnd - wordIndex * kWordBits;
-        if (lastWordBits > 0)
+        const unsigned lastWordBits = bitEnd - wordIndex * kWordBits;
+        if (lastWordBits > 0) {
             count += PopCount64(Words[wordIndex] << (kWordBits - lastWordBits));
+        }
 
         return count;
     }
@@ -276,26 +281,28 @@ struct CustomBitSet
 
         bitStart < kValidBits: Index to start looking
     */
-    unsigned FindFirstClear(unsigned bitStart)
+    unsigned FindFirstClear(const unsigned bitStart)
     {
         static_assert(kWordBits == 64, "Update this");
 
-        unsigned wordStart = bitStart / kWordBits;
+        const unsigned wordStart = bitStart / kWordBits;
 
         WordT word = ~Words[wordStart] >> (bitStart % kWordBits);
         if (word != 0)
         {
             unsigned offset = 0;
-            if ((word & 1) == 0)
+            if ((word & 1) == 0) {
                 offset = TrailingZeros64(word);
+            }
             return bitStart + offset;
         }
 
         for (unsigned i = wordStart + 1; i < kWords; ++i)
         {
             word = ~Words[i];
-            if (word != 0)
+            if (word != 0) {
                 return i * kWordBits + TrailingZeros64(word);
+            }
         }
 
         return kValidBits;
@@ -318,8 +325,9 @@ struct CustomBitSet
         if (word != 0)
         {
             unsigned offset = 0;
-            if ((word & 1) == 0)
+            if ((word & 1) == 0) {
                 offset = TrailingZeros64(word);
+            }
             return bitStart + offset;
         }
 
@@ -328,8 +336,9 @@ struct CustomBitSet
         for (unsigned i = wordStart + 1; i < wordEnd; ++i)
         {
             word = Words[i];
-            if (word != 0)
+            if (word != 0) {
                 return i * kWordBits + TrailingZeros64(word);
+            }
         }
 
         return bitEnd;
@@ -343,8 +352,9 @@ struct CustomBitSet
     */
     void SetRange(unsigned bitStart, unsigned bitEnd)
     {
-        if (bitStart >= bitEnd)
+        if (bitStart >= bitEnd) {
             return;
+        }
 
         unsigned wordStart = bitStart / kWordBits;
         const unsigned wordEnd = bitEnd / kWordBits;
@@ -366,8 +376,9 @@ struct CustomBitSet
         Words[wordStart] |= kAllOnes << bitStart;
 
         // Whole words at a time
-        for (unsigned i = wordStart + 1; i < wordEnd; ++i)
+        for (unsigned i = wordStart + 1; i < wordEnd; ++i) {
             Words[i] = kAllOnes;
+        }
 
         // Set first few bits of the last word
         unsigned lastWordBits = bitEnd - wordEnd * kWordBits;
@@ -386,8 +397,9 @@ struct CustomBitSet
     */
     void ClearRange(unsigned bitStart, unsigned bitEnd)
     {
-        if (bitStart >= bitEnd)
+        if (bitStart >= bitEnd) {
             return;
+        }
 
         unsigned wordStart = bitStart / kWordBits;
         const unsigned wordEnd = bitEnd / kWordBits;
@@ -409,8 +421,9 @@ struct CustomBitSet
         Words[wordStart] &= ~(kAllOnes << bitStart);
 
         // Whole words at a time
-        for (unsigned i = wordStart + 1; i < wordEnd; ++i)
+        for (unsigned i = wordStart + 1; i < wordEnd; ++i) {
             Words[i] = 0;
+        }
 
         // Clear first few bits of the last word
         unsigned lastWordBits = bitEnd - wordEnd * kWordBits;
@@ -435,6 +448,147 @@ enum class Realloc
 
 
 //------------------------------------------------------------------------------
+// LightVector
+
+/**
+    Super light-weight replacement for std::vector class
+
+    Features:
+    + Tuned for Siamese allocation needs.
+    + Never shrinks memory usage.
+    + Minimal well-defined API: Only functions used several times.
+    + Preallocates some elements to improve speed of short runs.
+    + Uses normal allocator.
+    + Growing the vector does not initialize the new elements for speed.
+    + Does not throw on out-of-memory error.
+*/
+template<typename T>
+class LightVector
+{
+    /// Number of preallocated elements
+    static const unsigned kPreallocated = 25; // Tuned for Siamese
+    T PreallocatedData[kPreallocated];
+
+    /// Size of vector: Count of elements in the vector
+    unsigned Size = 0;
+
+    /// Vector data
+    T* DataPtr = nullptr;
+
+    /// Number of elements allocated
+    unsigned Allocated = kPreallocated;
+
+public:
+    /// Resize the vector to the given number of elements.
+    /// After this call, all elements are Uninitialized.
+    /// If new size is greater than preallocated size,
+    /// it will allocate a new buffer that is 1.5x larger.
+    /// Returns false if memory could not be allocated
+    bool SetSize_NoCopy(unsigned elements)
+    {
+        PKTALLOC_DEBUG_ASSERT(Size <= Allocated);
+
+        // If it is actually expanding, and it needs to grow:
+        if (elements > Allocated)
+        {
+            const unsigned newAllocated = (elements * 3) / 2;
+            T* newData = new(std::nothrow) T[newAllocated];
+            if (!newData)
+                return false;
+            T* oldData = DataPtr;
+            Allocated  = newAllocated;
+            DataPtr    = newData;
+
+            // Delete old data without copying
+            if (oldData != &PreallocatedData[0]) {
+                delete[] oldData;
+            }
+        }
+
+        Size = elements;
+        return true;
+    }
+
+    /// Resize the vector to the given number of elements.
+    /// If new size is smaller than current size, it will truncate.
+    /// If new size is greater than current size, new elements will be Uninitialized.
+    /// And if new size is greater than preallocated size, it will allocate a new
+    /// buffer that is 1.5x larger and that will keep the existing data,
+    /// leaving any new elements Uninitialized.
+    /// Returns false if memory could not be allocated
+    bool SetSize_Copy(unsigned elements)
+    {
+        PKTALLOC_DEBUG_ASSERT(Size <= Allocated);
+
+        // If it is actually expanding, and it needs to grow:
+        if (elements > Allocated)
+        {
+            const unsigned newAllocated = (elements * 3) / 2;
+            T* newData = new(std::nothrow) T[newAllocated];
+            if (!newData) {
+                return false;
+            }
+            T* oldData = DataPtr;
+            Allocated  = newAllocated;
+            DataPtr    = newData;
+
+            // Copy data before deletion
+            memcpy(newData, oldData, sizeof(T) * Size);
+
+            if (oldData != &PreallocatedData[0]) {
+                delete[] oldData;
+            }
+        }
+
+        Size = elements;
+        return true;
+    }
+
+    /// Expand as needed and add one element to the end.
+    /// Returns false if memory could not be allocated
+    PKTALLOC_FORCE_INLINE bool Append(const T& rhs)
+    {
+        const unsigned newSize = Size + 1;
+        if (!SetSize_Copy(newSize)) {
+            return false;
+        }
+        DataPtr[newSize - 1] = rhs;
+        return true;
+    }
+
+    /// Set size to zero
+    PKTALLOC_FORCE_INLINE void Clear()
+    {
+        Size = 0;
+    }
+
+    /// Get current size (initially 0)
+    PKTALLOC_FORCE_INLINE unsigned GetSize() const
+    {
+        return Size;
+    }
+
+    /// Return a reference to an element
+    PKTALLOC_FORCE_INLINE T& GetRef(int index) const
+    {
+        return DataPtr[index];
+    }
+
+    /// Return a pointer to an element
+    PKTALLOC_FORCE_INLINE T* GetPtr(int index = 0) const
+    {
+        return DataPtr + index;
+    }
+
+    /// Initialize preallocated data
+    PKTALLOC_FORCE_INLINE LightVector()
+    {
+        DataPtr = &PreallocatedData[0];
+    }
+};
+
+
+//------------------------------------------------------------------------------
 // Allocator
 
 /// Instance of a packet allocator with its own block of memory
@@ -455,8 +609,9 @@ public:
     inline T* Construct()
     {
         uint8_t* mem = Allocate((unsigned)sizeof(T));
-        if (!mem)
+        if (!mem) {
             return nullptr;
+        }
         return new (mem)T();
     }
     template<class T>
@@ -478,11 +633,14 @@ protected:
     typedef CustomBitSet<kWindowMaxUnits> UsedMaskT;
 
     /// When we can only fit a few in a window, switch to fallback
-#ifdef PKTALLOC_DISABLE_ALLOCATOR
+#ifdef PKTALLOC_DISABLE
     static const unsigned kFallbackThresholdUnits = 0;
-#else
+#else // PKTALLOC_DISABLE
     static const unsigned kFallbackThresholdUnits = kWindowMaxUnits / 4;
-#endif
+#endif // PKTALLOC_DISABLE
+
+    /// List index takes on this value if it is in the preferred list
+    static const int kNotInFullList = -1;
 
     /// This is at the front of each allocation window
     struct WindowHeader
@@ -495,12 +653,8 @@ protected:
         /// Offset to resume scanning for a free spot
         unsigned ResumeScanOffset;
 
-        /// Next, prev window header in the set
-        WindowHeader* Next;
-        WindowHeader* Prev;
-
-        /// Set to true if this is part of the full list
-        bool InFullList;
+        /// Self-index in the containing list
+        int FullListIndex;
 
         /// Set to true if this is part of the preallocated chunk
         bool Preallocated;
@@ -510,24 +664,26 @@ protected:
     /// and Free() are faster.
     struct AllocationHeader
     {
+        /// Header for this window
+        /// Note: This will be set to nullptr for fallback allocations
+        WindowHeader* Header;
+
 #ifdef PKTALLOC_DEBUG
         static const uint32_t kCanaryExpected = 0xaabbccdd;
         uint32_t Canary;
 #endif // PKTALLOC_DEBUG
 
-        /// Is this allocation already freed? (some minimal self-diagnostics)
-        uint32_t Freed;
-
         /// Number of units used right now
+        /// 0 = Freed (some minimal self-diagnostics)
         uint32_t UsedUnits;
 
-        /// Header for this window
-        /// Note: This will be set to nullptr for fallback allocations
-        WindowHeader* Header;
+        /// Wrappers for UsedUnits == 0
+        PKTALLOC_FORCE_INLINE bool IsFreed() const {
+            return UsedUnits == 0;
+        }
 
         /// Calculate which unit this allocation starts at in the window
-        unsigned GetUnitStart()
-        {
+        PKTALLOC_FORCE_INLINE unsigned GetUnitStart() const {
             return (unsigned)((uint8_t*)this - ((uint8_t*)Header + kWindowHeaderBytes)) / kUnitSize;
         }
     };
@@ -546,13 +702,10 @@ protected:
 
     /// List of "preferred" windows with lower utilization
     /// We switch Preferred to Full when a scan fails to find an empty slot
-    WindowHeader* PreferredWindowsHead = nullptr;
-    WindowHeader* PreferredWindowsTail = nullptr;
-    unsigned PreferredWindowsCount = 0;
+    LightVector<WindowHeader*> PreferredWindows;
 
     /// List of "full" windows with higher utilization
-    WindowHeader* FullWindowsHead = nullptr;
-    unsigned FullWindowsCount = 0;
+    LightVector<WindowHeader*> FullWindows;
 
     /// We switch Full to Preferred when it drops below 1/4 utilization
     static const unsigned kPreferredThresholdUnits = 3 * kWindowMaxUnits / 4;
@@ -566,9 +719,8 @@ protected:
     void freeEmptyWindows();
 #endif
 
-    /// Move windows to full list between [PreferredWindowHead, stopWindow) not including stopWindow
-    /// If stopWindow is nullptr, then it will attempt to move all windows
-    void moveFirstFewWindowsToFull(WindowHeader* stopWindow);
+    /// Move last `count` of windows to the full list
+    void moveLastFewWindowsToFull(unsigned count);
 
     /// Allocate the units from a new window
     uint8_t* allocateFromNewWindow(unsigned units);

@@ -87,12 +87,12 @@ public:
 //// ZeroLossServer
 
 // Called with the latest data packet from remote host
-void ZeroLossServer::OnPacket(uint8_t *packet, int bytes) {
+void ZeroLossServer::OnPacket(uint8_t * /*packet*/, int /*bytes*/) {
     SIAMESE_DEBUG_BREAK(); // Unused
 }
 
 // Called with the latest OOB packet from remote host
-void ZeroLossServer::OnOOB(uint8_t *packet, int bytes) {
+void ZeroLossServer::OnOOB(uint8_t * /*packet*/, int /*bytes*/) {
     SIAMESE_DEBUG_BREAK(); // Unused
 }
 
@@ -174,7 +174,7 @@ void ZeroLossClient::OnPacket(uint8_t *packet, int bytes) {
 
     VERBOSE(cout << "TESTER: ON PACKET " << id << " with len = " << len << endl);
 
-    SIAMESE_DEBUG_ASSERT(bytes == len);
+    SIAMESE_DEBUG_ASSERT(bytes == (int)len);
 
     siamese::PCGRandom prng;
     prng.Seed(id);
@@ -187,7 +187,7 @@ void ZeroLossClient::OnPacket(uint8_t *packet, int bytes) {
 }
 
 // Called with the latest OOB packet from remote host
-void ZeroLossClient::OnOOB(uint8_t *packet, int bytes) {
+void ZeroLossClient::OnOOB(uint8_t * /*packet*/, int /*bytes*/) {
     SIAMESE_DEBUG_BREAK(); // Unused
 }
 

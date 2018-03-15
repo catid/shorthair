@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
+    Copyright (c) 2013-2018 Christopher A. Taylor.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -777,7 +777,7 @@ void ShorthairCodec::OnData(uint8_t *pkt, int len) {
 
     const int code_group = reconstructed_group.ToUnsigned();
     CodeGroup *group = &_groups[code_group];
-    _last_group = code_group;
+    _last_group = (uint8_t)code_group;
 
     // If the group is old,
     if ((uint64_t)(_last_tick - group->last_update) > GROUP_TIMEOUT) {
@@ -836,7 +836,7 @@ void ShorthairCodec::OnData(uint8_t *pkt, int len) {
         // NOTE: We cannot efficiently pad with zeroes yet because we do not
         // necessarily know what the largest packet length is yet.  And anyway
         // we may not need to pad at all if no loss occurs.
-        WriteU16_LE(p->data, data_len);
+        WriteU16_LE(p->data, (uint16_t)data_len);
         memcpy(p->data + 2, data, data_len);
 
         // Insert it into the original packet list

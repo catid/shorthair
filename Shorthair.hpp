@@ -159,8 +159,8 @@ private:
     uint8_t _code_group;
 
     // Packet workspace buffers
-    siamese::LightVector<uint8_t> _sym_buffer;
-    siamese::LightVector<uint8_t> _oob_buffer;
+    pktalloc::LightVector<uint8_t> _sym_buffer;
+    pktalloc::LightVector<uint8_t> _oob_buffer;
 
     // Rate of swapping and redundant symbol counter
     uint64_t _last_swap_time;

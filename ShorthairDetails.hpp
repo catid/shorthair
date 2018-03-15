@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2013-2014 Christopher A. Taylor.  All rights reserved.
+    Copyright (c) 2013-2018 Christopher A. Taylor.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -462,7 +462,7 @@ class Encoder {
     int _largest;                // Number of bytes max, excluding 2 byte implied length field
 
     // Workspace while sending recovery packets
-    siamese::LightVector<uint8_t> _buffer;        // Contains all recovery packets
+    pktalloc::LightVector<uint8_t> _buffer;        // Contains all recovery packets
     int _k, _m;                    // Codec parameter k, m
     int _next_recovery_block;    // Index into encode buffer to send next
     int _block_bytes;            // Block size in bytes

@@ -1,6 +1,6 @@
 /** \file
     \brief Custom Memory Allocator for Packet Data
-    \copyright Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
+    \copyright Copyright (c) 2017-2018 Christopher A. Taylor.  All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -47,8 +47,9 @@ namespace pktalloc {
 static inline uint8_t* SIMDSafeAllocate(size_t size)
 {
     uint8_t* data = (uint8_t*)calloc(1, kAlignmentBytes + size);
-    if (!data)
+    if (!data) {
         return nullptr;
+    }
     unsigned offset = (unsigned)((uintptr_t)data % kAlignmentBytes);
     data += kAlignmentBytes - offset;
     data[-1] = (uint8_t)offset;
@@ -57,12 +58,12 @@ static inline uint8_t* SIMDSafeAllocate(size_t size)
 
 static inline void SIMDSafeFree(void* ptr)
 {
-    if (!ptr)
+    if (!ptr) {
         return;
+    }
     uint8_t* data = (uint8_t*)ptr;
     unsigned offset = data[-1];
-    if (offset >= kAlignmentBytes)
-    {
+    if (offset >= kAlignmentBytes) {
         PKTALLOC_DEBUG_BREAK(); // Should never happen
         return;
     }
@@ -78,30 +79,26 @@ Allocator::Allocator()
 {
     static_assert(kAlignmentBytes == kUnitSize, "update SIMDSafeAllocate");
 
+    PreferredWindows.SetSize_NoCopy(kPreallocatedWindows);
+
     HugeChunkStart = SIMDSafeAllocate(kWindowSizeBytes * kPreallocatedWindows);
     if (HugeChunkStart)
     {
         uint8_t* windowStart = HugeChunkStart;
 
-        PreferredWindowsHead = nullptr;
-        PreferredWindowsTail = (WindowHeader*)windowStart;
-        PreferredWindowsCount = kPreallocatedWindows;
-
         // For each window to preallocate:
         for (unsigned i = 0; i < kPreallocatedWindows; ++i)
         {
-            WindowHeader* windowHeader = (WindowHeader*)windowStart;
+            WindowHeader* window = (WindowHeader*)windowStart;
             windowStart += kWindowSizeBytes;
 
-            windowHeader->Used.ClearAll();
-            windowHeader->FreeUnitCount    = kWindowMaxUnits;
-            windowHeader->ResumeScanOffset = 0;
-            windowHeader->Prev             = nullptr;
-            windowHeader->Next             = PreferredWindowsHead;
-            windowHeader->InFullList       = false;
-            windowHeader->Preallocated     = true;
- 
-            PreferredWindowsHead = windowHeader;
+            window->Used.ClearAll();
+            window->FreeUnitCount = kWindowMaxUnits;
+            window->ResumeScanOffset = 0;
+            window->Preallocated = true;
+            window->FullListIndex = kNotInFullList;
+
+            PreferredWindows.GetRef(i) = window;
         }
     }
 
@@ -110,17 +107,21 @@ Allocator::Allocator()
 
 Allocator::~Allocator()
 {
-    for (WindowHeader* node = PreferredWindowsHead, *next; node; node = next)
+    for (unsigned i = 0, count = PreferredWindows.GetSize(); i < count; ++i)
     {
-        next = node->Next;
-        if (!node->Preallocated)
-            SIMDSafeFree(node);
+        WindowHeader* window = PreferredWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window != nullptr);
+        if (window && !window->Preallocated) {
+            SIMDSafeFree(window);
+        }
     }
-    for (WindowHeader* node = FullWindowsHead, *next; node; node = next)
+    for (unsigned i = 0, count = FullWindows.GetSize(); i < count; ++i)
     {
-        next = node->Next;
-        if (!node->Preallocated)
-            SIMDSafeFree(node);
+        WindowHeader* window = FullWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window != nullptr);
+        if (window && !window->Preallocated) {
+            SIMDSafeFree(window);
+        }
     }
     SIMDSafeFree(HugeChunkStart);
 }
@@ -128,138 +129,136 @@ Allocator::~Allocator()
 unsigned Allocator::GetMemoryUsedBytes() const
 {
     unsigned sum = 0;
-    for (WindowHeader* node = PreferredWindowsHead; node; node = node->Next)
-        sum += kWindowMaxUnits - node->FreeUnitCount;
-    for (WindowHeader* node = FullWindowsHead; node; node = node->Next)
-        sum += kWindowMaxUnits - node->FreeUnitCount;
+    for (unsigned i = 0, count = PreferredWindows.GetSize(); i < count; ++i)
+    {
+        WindowHeader* window = PreferredWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window != nullptr);
+        if (window) {
+            sum += kWindowMaxUnits - window->FreeUnitCount;
+        }
+    }
+    for (unsigned i = 0, count = FullWindows.GetSize(); i < count; ++i)
+    {
+        WindowHeader* window = FullWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window != nullptr);
+        if (window) {
+            sum += kWindowMaxUnits - window->FreeUnitCount;
+        }
+    }
     return sum * kUnitSize;
 }
 
 unsigned Allocator::GetMemoryAllocatedBytes() const
 {
-    return (unsigned)((PreferredWindowsCount + FullWindowsCount) * kWindowMaxUnits * kUnitSize);
+    return (unsigned)((PreferredWindows.GetSize() + FullWindows.GetSize()) * kWindowMaxUnits * kUnitSize);
 }
 
 bool Allocator::IntegrityCheck() const
 {
 #ifdef PKTALLOC_SHRINK
-    PKTALLOC_DEBUG_ASSERT(PreferredWindowsCount >= EmptyWindowCount);
+    PKTALLOC_DEBUG_ASSERT(PreferredWindows.GetSize() >= EmptyWindowCount);
 #endif // PKTALLOC_SHRINK
 
     unsigned emptyCount = 0;
     unsigned preallocatedCount = 0;
 
-    PKTALLOC_DEBUG_ASSERT(!PreferredWindowsHead || PreferredWindowsHead->Prev == nullptr);
-    PKTALLOC_DEBUG_ASSERT(!PreferredWindowsTail || PreferredWindowsTail->Next == nullptr);
-
-    unsigned ii = 0;
-    for (WindowHeader* windowHeader = PreferredWindowsHead; windowHeader; windowHeader = windowHeader->Next, ++ii)
+    // Check preferred windows list:
+    for (unsigned i = 0, icount = PreferredWindows.GetSize(); i < icount; ++i)
     {
-        if (ii >= PreferredWindowsCount)
+        WindowHeader* window = PreferredWindows.GetRef(i);
+        if (!window || window->FullListIndex != kNotInFullList)
         {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+            PKTALLOC_DEBUG_BREAK(); // Null found
             return false;
         }
-        unsigned jj = 0;
-        for (WindowHeader* other = PreferredWindowsHead; other; other = other->Next, ++jj)
+        for (unsigned j = 0, jcount = PreferredWindows.GetSize(); j < jcount; ++j)
         {
-            if (windowHeader == other && ii != jj)
+            WindowHeader* other = PreferredWindows.GetRef(j);
+            if (window == other && i != j)
             {
-                PKTALLOC_DEBUG_BREAK(); // Should never happen
+                PKTALLOC_DEBUG_BREAK(); // Duplicate found
                 return false;
             }
         }
-        if (windowHeader->InFullList)
+        if (window->FreeUnitCount <= 0 || window->FreeUnitCount > kWindowMaxUnits)
         {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+            PKTALLOC_DEBUG_BREAK(); // Invalid FreeUnitCount
             return false;
         }
-        if (windowHeader->FreeUnitCount <= 0 || windowHeader->FreeUnitCount > kWindowMaxUnits)
+        if (window->ResumeScanOffset > kWindowMaxUnits)
         {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+            PKTALLOC_DEBUG_BREAK(); // Invalid ResumeScanOffset
             return false;
         }
-        if (windowHeader->ResumeScanOffset > kWindowMaxUnits)
+        const unsigned setCount = window->Used.RangePopcount(0, kWindowMaxUnits);
+        if (setCount != kWindowMaxUnits - window->FreeUnitCount)
         {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+            PKTALLOC_DEBUG_BREAK(); // Bitfield does not match FreeUnitCount
             return false;
         }
-        unsigned setCount = windowHeader->Used.RangePopcount(0, kWindowMaxUnits);
-        if (setCount != kWindowMaxUnits - windowHeader->FreeUnitCount)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
-            return false;
-        }
-        if (windowHeader->Preallocated)
+        if (window->Preallocated) {
             ++preallocatedCount;
-        else if (windowHeader->FreeUnitCount == kWindowMaxUnits)
+        }
+        else if (window->FreeUnitCount == kWindowMaxUnits) {
             ++emptyCount;
+        }
     }
-    PKTALLOC_DEBUG_ASSERT(ii == PreferredWindowsCount);
 
-    ii = 0;
-    for (WindowHeader* windowHeader = FullWindowsHead, *prev = nullptr; windowHeader; windowHeader = windowHeader->Next, ++ii)
+    // Check full windows list:
+    for (unsigned i = 0, icount = FullWindows.GetSize(); i < icount; ++i)
     {
-        PKTALLOC_DEBUG_ASSERT(windowHeader->Prev == prev);
-        prev = windowHeader;
+        WindowHeader* window = FullWindows.GetRef(i);
 
-        if (ii >= FullWindowsCount)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+        if (!window || window->FullListIndex != (int)i) {
+            PKTALLOC_DEBUG_BREAK(); // Null pointer
             return false;
         }
-        for (WindowHeader* other = PreferredWindowsHead; other; other = other->Next)
+        for (unsigned j = 0, jcount = PreferredWindows.GetSize(); j < jcount; ++j)
         {
-            if (windowHeader == other)
+            WindowHeader* other = PreferredWindows.GetRef(j);
+            if (window == other)
             {
-                PKTALLOC_DEBUG_BREAK(); // Should never happen
+                PKTALLOC_DEBUG_BREAK(); // Duplicate
                 return false;
             }
         }
-        unsigned jj = 0;
-        for (WindowHeader* other = FullWindowsHead; other; other = other->Next, ++jj)
+        for (unsigned j = 0, jcount = FullWindows.GetSize(); j < jcount; ++j)
         {
-            if (windowHeader == other && ii != jj)
+            WindowHeader* other = FullWindows.GetRef(j);
+            if (window == other && i != j)
             {
-                PKTALLOC_DEBUG_BREAK(); // Should never happen
+                PKTALLOC_DEBUG_BREAK(); // Duplicate
                 return false;
             }
         }
-        if (!windowHeader->InFullList)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+#if 0
+        // TBD: Investigate this one further
+        if (window->FreeUnitCount > kPreferredThresholdUnits) {
+            PKTALLOC_DEBUG_BREAK(); // Invalid FreeUnitCount
             return false;
         }
-        if (windowHeader->FreeUnitCount > kPreferredThresholdUnits)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+#endif
+        if (window->ResumeScanOffset > kWindowMaxUnits) {
+            PKTALLOC_DEBUG_BREAK(); // Invalid ResumeScanOffset
             return false;
         }
-        if (windowHeader->ResumeScanOffset > kWindowMaxUnits)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
+        const unsigned setCount = window->Used.RangePopcount(0, kWindowMaxUnits);
+        if (setCount != kWindowMaxUnits - window->FreeUnitCount) {
+            PKTALLOC_DEBUG_BREAK(); // Bitfield does not match FreeUnitCount
             return false;
         }
-        unsigned setCount = windowHeader->Used.RangePopcount(0, kWindowMaxUnits);
-        if (setCount != kWindowMaxUnits - windowHeader->FreeUnitCount)
-        {
-            PKTALLOC_DEBUG_BREAK(); // Should never happen
-            return false;
-        }
-        if (windowHeader->Preallocated)
+        if (window->Preallocated) {
             ++preallocatedCount;
+        }
     }
-    PKTALLOC_DEBUG_ASSERT(ii == FullWindowsCount);
 
-    if (preallocatedCount != kPreallocatedWindows)
-    {
-        PKTALLOC_DEBUG_BREAK(); // Should never happen
+    if (preallocatedCount != kPreallocatedWindows) {
+        PKTALLOC_DEBUG_BREAK(); // Lost a preallocated window
         return false;
     }
 #ifdef PKTALLOC_SHRINK
-    if (emptyCount != EmptyWindowCount)
-    {
-        PKTALLOC_DEBUG_BREAK(); // Should never happen
+    if (emptyCount != EmptyWindowCount) {
+        PKTALLOC_DEBUG_BREAK(); // EmptyWindowCount does not match 
         return false;
     }
 #endif // PKTALLOC_SHRINK
@@ -268,8 +267,9 @@ bool Allocator::IntegrityCheck() const
 
 uint8_t* Allocator::Allocate(unsigned bytes)
 {
-    if (bytes <= 0)
+    if (bytes <= 0) {
         return nullptr;
+    }
 
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
@@ -277,31 +277,37 @@ uint8_t* Allocator::Allocate(unsigned bytes)
     // Note: +1 for the AllocationHeader
     const unsigned units = (bytes + kUnitSize - 1) / kUnitSize + 1;
 
-    if (units > kFallbackThresholdUnits)
+    if (units > kFallbackThresholdUnits) {
         return fallbackAllocate(bytes);
+    }
 
-    for (WindowHeader* windowHeader = PreferredWindowsHead, *prev = nullptr; windowHeader; prev = windowHeader, windowHeader = windowHeader->Next)
+    // Check preferred windows list:
+    const unsigned preferredCount = PreferredWindows.GetSize();
+    for (int i = (int)preferredCount - 1; i >= 0; --i)
     {
-        PKTALLOC_DEBUG_ASSERT(!windowHeader->InFullList);
+        WindowHeader* window = PreferredWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window);
 
-        if (windowHeader->FreeUnitCount < units)
+        if (window->FreeUnitCount < units) {
             continue;
+        }
 
         // Walk the holes in the bitmask:
-        UsedMaskT& usedMask  = windowHeader->Used;
-        unsigned regionStart = windowHeader->ResumeScanOffset;
-        while (regionStart < usedMask.kValidBits)
+        UsedMaskT* usedPtr = &window->Used;
+        unsigned regionStart = window->ResumeScanOffset;
+        while (regionStart < UsedMaskT::kValidBits)
         {
-            regionStart = usedMask.FindFirstClear(regionStart);
+            regionStart = usedPtr->FindFirstClear(regionStart);
             unsigned regionEnd = regionStart + units;
 
             // If we ran out of space:
-            if (regionEnd > usedMask.kValidBits)
+            if (regionEnd > UsedMaskT::kValidBits) {
                 break;
+            }
 
-            regionEnd = usedMask.FindFirstSet(regionStart + 1, regionEnd);
+            regionEnd = usedPtr->FindFirstSet(regionStart + 1, regionEnd);
             PKTALLOC_DEBUG_ASSERT(regionEnd > regionStart);
-            PKTALLOC_DEBUG_ASSERT(regionEnd <= usedMask.kValidBits);
+            PKTALLOC_DEBUG_ASSERT(regionEnd <= UsedMaskT::kValidBits);
 
             if (regionEnd - regionStart < units)
             {
@@ -311,31 +317,37 @@ uint8_t* Allocator::Allocate(unsigned bytes)
             regionEnd = regionStart + units;
 
             // Carve out region
-            uint8_t* region = (uint8_t*)windowHeader + kWindowHeaderBytes + regionStart * kUnitSize;
+            uint8_t* region = (uint8_t*)window + kWindowHeaderBytes + regionStart * kUnitSize;
             AllocationHeader* regionHeader = (AllocationHeader*)region;
 #ifdef PKTALLOC_DEBUG
             regionHeader->Canary = AllocationHeader::kCanaryExpected;
 #endif // PKTALLOC_DEBUG
-            regionHeader->Header    = windowHeader;
+            regionHeader->Header = window;
             regionHeader->UsedUnits = units;
-            regionHeader->Freed     = false;
 
             // Update window header
 #ifdef PKTALLOC_SHRINK
-            if (windowHeader->FreeUnitCount >= kWindowMaxUnits && !windowHeader->Preallocated)
+            if (window->FreeUnitCount >= kWindowMaxUnits &&
+                !window->Preallocated)
             {
                 PKTALLOC_DEBUG_ASSERT(EmptyWindowCount > 0);
                 --EmptyWindowCount;
             }
 #endif // PKTALLOC_SHRINK
-            windowHeader->FreeUnitCount -= units;
-            usedMask.SetRange(regionStart, regionStart + units);
-            windowHeader->ResumeScanOffset = regionStart + units;
+            window->FreeUnitCount -= units;
+            usedPtr->SetRange(regionStart, regionStart + units);
+            window->ResumeScanOffset = regionStart + units;
+
+            // Any prior windows that failed to allocate are moved to full list
+            unsigned fullCount = preferredCount - 1 - i;
 
             // Move this window to the full list if we cannot make another allocation of the same size
-            const unsigned kMinRemaining = units;
-            WindowHeader* moveStopWindow = (windowHeader->ResumeScanOffset + kMinRemaining > kWindowMaxUnits) ? windowHeader->Next : windowHeader;
-            moveFirstFewWindowsToFull(moveStopWindow);
+            if (regionStart + units * 2 > kWindowMaxUnits) {
+                // Include this one too
+                ++fullCount;
+            }
+
+            moveLastFewWindowsToFull(fullCount);
 
             uint8_t* data = region + kUnitSize;
 #ifdef PKTALLOC_SCRUB_MEMORY
@@ -350,77 +362,33 @@ uint8_t* Allocator::Allocate(unsigned bytes)
     }
 
     // Move all preferred windows to full since none of them worked out
-    moveFirstFewWindowsToFull(nullptr);
+    moveLastFewWindowsToFull(preferredCount);
 
     return allocateFromNewWindow(units);
 }
 
-void Allocator::moveFirstFewWindowsToFull(WindowHeader* stopWindow)
+void Allocator::moveLastFewWindowsToFull(unsigned count)
 {
-    unsigned movedCount = 0;
-    WindowHeader* moveHead = FullWindowsHead;
-    WindowHeader* keepHead = nullptr;
-    WindowHeader* keepTail = nullptr;
+    const unsigned existingFullCount = FullWindows.GetSize();
+    FullWindows.SetSize_Copy(existingFullCount + count);
 
-    for (WindowHeader* windowHeader = PreferredWindowsHead, *next; windowHeader != stopWindow; windowHeader = next)
+    const unsigned existingPreferredCount = PreferredWindows.GetSize();
+    PKTALLOC_DEBUG_ASSERT(existingPreferredCount >= count);
+
+    // For each window to move:
+    for (unsigned i = 0; i < count; ++i)
     {
-        next = windowHeader->Next;
+        const unsigned windowIndex = existingPreferredCount - 1 - i;
+        PKTALLOC_DEBUG_ASSERT(windowIndex < PreferredWindows.GetSize());
+        WindowHeader* window = PreferredWindows.GetRef(windowIndex);
+        PKTALLOC_DEBUG_ASSERT(window);
 
-        // If this window should stay in the preferred list:
-        if (windowHeader->FreeUnitCount >= kPreferredThresholdUnits)
-        {
-            // Reset the free block scan from the top for this window since we missed some holes
-            // But we will move it to the end of the preferred list since it seems spotty
-            windowHeader->ResumeScanOffset = 0;
-
-            // Place it in the "keep" list for now
-            if (keepTail)
-                keepTail->Next = windowHeader;
-            else
-                keepHead = windowHeader;
-            keepTail = windowHeader;
-        }
-        else
-        {
-            // Move the window to the full list
-            windowHeader->InFullList = true;
-            ++movedCount;
-            windowHeader->Next = moveHead;
-            if (moveHead)
-                moveHead->Prev = windowHeader;
-            windowHeader->Prev = nullptr;
-            moveHead = windowHeader;
-        }
+        // Move the window to the full list
+        FullWindows.GetRef(existingFullCount + i) = window;
+        window->FullListIndex = existingFullCount + i;
     }
 
-    // Update FullWindows list
-    FullWindowsHead = moveHead;
-    FullWindowsCount += movedCount;
-
-    // Update PreferredWindows list
-    PreferredWindowsCount -= movedCount;
-    if (stopWindow)
-    {
-#ifdef PKTALLOC_DEBUG
-        stopWindow->Prev = nullptr;
-#endif // PKTALLOC_DEBUG
-        PreferredWindowsHead = stopWindow;
-        PKTALLOC_DEBUG_ASSERT(PreferredWindowsTail != nullptr);
-
-        if (keepHead)
-        {
-            PreferredWindowsTail->Next = keepHead;
-            PreferredWindowsTail = keepTail;
-            keepTail->Next = nullptr;
-        }
-    }
-    else
-    {
-        PreferredWindowsHead = keepHead;
-        PreferredWindowsTail = keepTail;
-        if (keepHead)
-            keepTail->Next = nullptr;
-    }
+    PreferredWindows.SetSize_Copy(existingPreferredCount - count);
 
     ALLOC_DEBUG_INTEGRITY_CHECK();
 }
@@ -430,35 +398,28 @@ uint8_t* Allocator::allocateFromNewWindow(unsigned units)
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
     uint8_t* headerStart = SIMDSafeAllocate(kWindowSizeBytes);
-    if (!headerStart)
+    if (!headerStart) {
         return nullptr; // Allocation failure
+    }
 
     // Update window header
-    WindowHeader* windowHeader = (WindowHeader*)headerStart;
-    windowHeader->Used.ClearAll();
-    windowHeader->Used.SetRange(0, units);
-    windowHeader->FreeUnitCount = kWindowMaxUnits - units;
-    windowHeader->ResumeScanOffset = units;
-    windowHeader->InFullList = false;
-    windowHeader->Next = PreferredWindowsHead;
-    windowHeader->Preallocated = false;
-
-    // Insert into PreferredWindows list
-    if (PreferredWindowsHead)
-        PreferredWindowsHead->Prev = windowHeader;
-    else
-        PreferredWindowsTail = windowHeader;
-    PreferredWindowsHead = windowHeader;
-    ++PreferredWindowsCount;
+    WindowHeader* window = (WindowHeader*)headerStart;
+    window->Used.ClearAll();
+    window->Used.SetRange(0, units);
+    window->FreeUnitCount = kWindowMaxUnits - units;
+    window->ResumeScanOffset = units;
+    window->Preallocated = false;
+    PKTALLOC_DEBUG_ASSERT(PreferredWindows.GetSize() == 0);
+    window->FullListIndex = kNotInFullList;
+    PreferredWindows.Append(window);
 
     // Carve out region
     AllocationHeader* regionHeader = (AllocationHeader*)(headerStart + kWindowHeaderBytes);
 #ifdef PKTALLOC_DEBUG
     regionHeader->Canary = AllocationHeader::kCanaryExpected;
 #endif // PKTALLOC_DEBUG
-    regionHeader->Header    = windowHeader;
+    regionHeader->Header = window;
     regionHeader->UsedUnits = units;
-    regionHeader->Freed     = false;
 
     uint8_t* data = (uint8_t*)regionHeader + kUnitSize;
 #ifdef PKTALLOC_SCRUB_MEMORY
@@ -475,10 +436,10 @@ uint8_t* Allocator::Reallocate(uint8_t* ptr, unsigned bytes, Realloc behavior)
 {
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
-    if (!ptr)
+    if (!ptr) {
         return Allocate(bytes);
-    if (bytes <= 0)
-    {
+    }
+    if (bytes <= 0) {
         Free(ptr);
         return nullptr;
     }
@@ -486,36 +447,37 @@ uint8_t* Allocator::Reallocate(uint8_t* ptr, unsigned bytes, Realloc behavior)
 
     AllocationHeader* regionHeader = (AllocationHeader*)(ptr - kUnitSize);
 #ifdef PKTALLOC_DEBUG
-    if (regionHeader->Canary != AllocationHeader::kCanaryExpected)
-    {
+    if (regionHeader->Canary != AllocationHeader::kCanaryExpected) {
         PKTALLOC_DEBUG_BREAK(); // Buffer overflow detected
         return nullptr;
     }
-#endif // PKTALLOC_DEBUG
-    if (regionHeader->Freed)
-    {
+    if (regionHeader->IsFreed()) {
         PKTALLOC_DEBUG_BREAK(); // Double-free
-        return Allocate(bytes);
+        return nullptr;
     }
+#endif // PKTALLOC_DEBUG
 
     const unsigned existingUnits = regionHeader->UsedUnits;
-#ifndef PKTALLOC_DISABLE_ALLOCATOR
+#ifndef PKTALLOC_DISABLE
     PKTALLOC_DEBUG_ASSERT(!regionHeader->Header || existingUnits <= kFallbackThresholdUnits);
-#endif // PKTALLOC_DISABLE_ALLOCATOR
+#endif // PKTALLOC_DISABLE
 
     // If the existing allocation is big enough:
     const unsigned requestedUnits = (bytes + kUnitSize - 1) / kUnitSize + 1;
-    if (requestedUnits <= existingUnits)
+    if (requestedUnits <= existingUnits) {
         return ptr; // No change needed
+    }
 
     // Allocate new data
     uint8_t* newPtr = Allocate(bytes);
-    if (!newPtr)
+    if (!newPtr) {
         return nullptr;
+    }
 
     // Copy old data
-    if (behavior == Realloc::CopyExisting)
+    if (behavior == Realloc::CopyExisting) {
         memcpy(newPtr, ptr, (existingUnits - 1) * kUnitSize);
+    }
 
     Free(ptr);
 
@@ -528,20 +490,19 @@ void Allocator::Shrink(uint8_t* ptr, unsigned bytes)
 {
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
-    if (!ptr)
+    if (!ptr) {
         return;
+    }
     PKTALLOC_DEBUG_ASSERT((uintptr_t)ptr % kUnitSize == 0);
 
     AllocationHeader* regionHeader = (AllocationHeader*)(ptr - kUnitSize);
 #ifdef PKTALLOC_DEBUG
-    if (regionHeader->Canary != AllocationHeader::kCanaryExpected)
-    {
+    if (regionHeader->Canary != AllocationHeader::kCanaryExpected) {
         PKTALLOC_DEBUG_BREAK(); // Buffer overflow detected
         return;
     }
 #endif // PKTALLOC_DEBUG
-    if (regionHeader->Freed)
-    {
+    if (regionHeader->IsFreed()) {
         PKTALLOC_DEBUG_BREAK(); // Double-free
         return;
     }
@@ -555,8 +516,7 @@ void Allocator::Shrink(uint8_t* ptr, unsigned bytes)
     if (unitsNeeded < unitsCurrent)
     {
         WindowHeader* windowHeader = regionHeader->Header;
-        if (!windowHeader)
-        {
+        if (!windowHeader) {
             // Fallback allocation: We cannot resize this region
             return;
         }
@@ -571,8 +531,9 @@ void Allocator::Shrink(uint8_t* ptr, unsigned bytes)
         PKTALLOC_DEBUG_ASSERT((regionStart + unitsCurrent) > regionEndNew);
 
         // Resume scanning from this hole next time
-        if (windowHeader->ResumeScanOffset > regionEndNew)
+        if (windowHeader->ResumeScanOffset > regionEndNew) {
             windowHeader->ResumeScanOffset = regionEndNew;
+        }
 
         // Clear the units we gave up
         windowHeader->Used.ClearRange(regionEndNew, regionStart + unitsCurrent);
@@ -594,90 +555,84 @@ void Allocator::Free(uint8_t* ptr)
 {
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
-    if (!ptr)
+    if (!ptr) {
         return;
+    }
     PKTALLOC_DEBUG_ASSERT((uintptr_t)ptr % kUnitSize == 0);
 
     AllocationHeader* regionHeader = (AllocationHeader*)(ptr - kUnitSize);
 #ifdef PKTALLOC_DEBUG
-    if (regionHeader->Canary != AllocationHeader::kCanaryExpected)
-    {
+    if (regionHeader->Canary != AllocationHeader::kCanaryExpected) {
         PKTALLOC_DEBUG_BREAK(); // Buffer overflow detected
         return;
     }
 #endif // PKTALLOC_DEBUG
-    if (regionHeader->Freed)
-    {
+    if (regionHeader->IsFreed()) {
         PKTALLOC_DEBUG_BREAK(); // Double-free
         return;
     }
-    regionHeader->Freed = true;
 
-    WindowHeader* windowHeader = regionHeader->Header;
-    if (!windowHeader)
+    WindowHeader* window = regionHeader->Header;
+    if (!window)
     {
+        regionHeader->UsedUnits = 0; // Mark freed
         fallbackFree(ptr);
         return;
     }
 
     const unsigned units = regionHeader->UsedUnits;
     PKTALLOC_DEBUG_ASSERT(units >= 2 && units <= kFallbackThresholdUnits);
+    regionHeader->UsedUnits = 0; // Mark freed
 
     PKTALLOC_DEBUG_ASSERT((uint8_t*)regionHeader >= (uint8_t*)regionHeader->Header + kWindowHeaderBytes);
     unsigned regionStart = regionHeader->GetUnitStart();
     PKTALLOC_DEBUG_ASSERT(regionStart < kWindowMaxUnits);
-    PKTALLOC_DEBUG_ASSERT(regionStart + regionHeader->UsedUnits <= kWindowMaxUnits);
+    PKTALLOC_DEBUG_ASSERT(regionStart + units <= kWindowMaxUnits);
 
     unsigned regionEnd = regionStart + units;
 
     // Resume scanning from this hole next time
-    if (windowHeader->ResumeScanOffset > regionStart)
-        windowHeader->ResumeScanOffset = regionStart;
+    if (window->ResumeScanOffset > regionStart) {
+        window->ResumeScanOffset = regionStart;
+    }
 
     // Clear the units it was using
-    windowHeader->Used.ClearRange(regionStart, regionEnd);
+    window->Used.ClearRange(regionStart, regionEnd);
 
     // Give back the unit count
-    windowHeader->FreeUnitCount += units;
+    window->FreeUnitCount += units;
 
     // If we may want to promote this to Preferred:
-    if (windowHeader->FreeUnitCount >= kPreferredThresholdUnits &&
-        windowHeader->InFullList)
+    if (window->FreeUnitCount >= kPreferredThresholdUnits &&
+        window->FullListIndex != kNotInFullList)
     {
-        windowHeader->InFullList = false;
-
         // Restart scanning from the front
-        windowHeader->ResumeScanOffset = 0;
+        window->ResumeScanOffset = 0;
 
-        // Remove from the FullWindows list
-        WindowHeader* prev = windowHeader->Prev;
-        WindowHeader* next = windowHeader->Next;
-        if (prev)
-            prev->Next = next;
-        else
-            FullWindowsHead = next;
-        if (next)
-            next->Prev = prev;
-        PKTALLOC_DEBUG_ASSERT(FullWindowsCount > 0);
-        --FullWindowsCount;
+        // Swap last item in full list into the slot
+        const unsigned fullCount = FullWindows.GetSize();
+        const unsigned fullIndex = (unsigned)window->FullListIndex;
+        PKTALLOC_DEBUG_ASSERT(fullIndex < fullCount);
+        PKTALLOC_DEBUG_ASSERT(fullCount > 0);
+        if (fullIndex < fullCount - 1)
+        {
+            WindowHeader* replacement = FullWindows.GetRef(fullCount - 1);
+            FullWindows.GetRef(fullIndex) = replacement;
+            replacement->FullListIndex = fullIndex;
+        }
+        FullWindows.SetSize_Copy(fullCount - 1);
 
-        // Insert at end of the PreferredWindows list
-        ++PreferredWindowsCount;
-        windowHeader->Prev = nullptr;
-        windowHeader->Next = nullptr;
-        if (PreferredWindowsTail)
-            PreferredWindowsTail->Next = windowHeader;
-        else
-            PreferredWindowsHead = windowHeader;
-        PreferredWindowsTail = windowHeader;
+        window->FullListIndex = kNotInFullList;
+        PreferredWindows.Append(window);
     }
 
 #ifdef PKTALLOC_SHRINK
-    if (windowHeader->FreeUnitCount >= kWindowMaxUnits && !windowHeader->Preallocated)
+    // If we should do some bulk cleanup:
+    if (window->FreeUnitCount >= kWindowMaxUnits &&
+        !window->Preallocated &&
+        ++EmptyWindowCount >= kEmptyWindowCleanupThreshold)
     {
-        // If we should do some bulk cleanup:
-        if (++EmptyWindowCount >= kEmptyWindowCleanupThreshold)
-            freeEmptyWindows();
+        freeEmptyWindows();
     }
 #endif // PKTALLOC_SHRINK
 
@@ -688,39 +643,40 @@ void Allocator::Free(uint8_t* ptr)
 
 void Allocator::freeEmptyWindows()
 {
-    if (EmptyWindowCount <= kEmptyWindowMinimum)
+    if (EmptyWindowCount <= kEmptyWindowMinimum) {
         return;
+    }
 
     ALLOC_DEBUG_INTEGRITY_CHECK();
 
-    for (WindowHeader* windowHeader = PreferredWindowsHead, *next, *prev = nullptr; windowHeader; windowHeader = next)
+    // Check full windows list:
+    unsigned count = PreferredWindows.GetSize();
+    for (unsigned i = 0; i < count;)
     {
-        next = windowHeader->Next;
+        WindowHeader* window = PreferredWindows.GetRef(i);
+        PKTALLOC_DEBUG_ASSERT(window && window->FullListIndex == kNotInFullList);
 
-        // If this window can be reclaimed:
-        if (windowHeader->FreeUnitCount >= kWindowMaxUnits && !windowHeader->Preallocated)
+        // If this window cannot be reclaimed:
+        if (window->FreeUnitCount < kWindowMaxUnits ||
+            window->Preallocated)
         {
-            if (prev)
-                prev->Next = next;
-            else
-                PreferredWindowsHead = next;
-            if (!next)
-                PreferredWindowsTail = prev;
-
-            SIMDSafeFree(windowHeader);
-
-            PKTALLOC_DEBUG_ASSERT(PreferredWindowsCount > 0);
-            --PreferredWindowsCount;
-
-            PKTALLOC_DEBUG_ASSERT(EmptyWindowCount > 0);
-            if (--EmptyWindowCount <= kEmptyWindowMinimum)
-                break;
+            ++i;
+            continue;
         }
-        else
-        {
-            prev = windowHeader;
+
+        SIMDSafeFree(window);
+
+        PKTALLOC_DEBUG_ASSERT(count > 0);
+        --count;
+
+        PreferredWindows.GetRef(i) = PreferredWindows.GetRef(count);
+
+        PKTALLOC_DEBUG_ASSERT(EmptyWindowCount > 0);
+        if (--EmptyWindowCount <= kEmptyWindowMinimum) {
+            break;
         }
     }
+    PreferredWindows.SetSize_Copy(count);
 
     ALLOC_DEBUG_INTEGRITY_CHECK();
 }
@@ -734,15 +690,15 @@ uint8_t* Allocator::fallbackAllocate(unsigned bytes)
     const unsigned units = (bytes + kUnitSize - 1) / kUnitSize + 1;
 
     uint8_t* ptr = SIMDSafeAllocate(kUnitSize * units);
-    if (!ptr)
+    if (!ptr) {
         return nullptr;
+    }
 
     AllocationHeader* regionHeader = (AllocationHeader*)ptr;
 #ifdef PKTALLOC_DEBUG
-    regionHeader->Canary    = AllocationHeader::kCanaryExpected;
+    regionHeader->Canary = AllocationHeader::kCanaryExpected;
 #endif // PKTALLOC_DEBUG
-    regionHeader->Freed     = false;
-    regionHeader->Header    = nullptr;
+    regionHeader->Header = nullptr;
     regionHeader->UsedUnits = units;
 
     return ptr + kUnitSize;
