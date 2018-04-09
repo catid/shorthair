@@ -233,14 +233,14 @@ public:
     /// Bias > 0 can be used to accept values farther in the past
     /// Bias < 0 can be used to accept values farther in the future
     template<class SmallerT>
-    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncated(
+    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncatedWithBias(
         const ThisType recent,
         const SmallerT smaller,
-        const SignedType bias = 0)
+        const SignedType bias)
     {
         static_assert(SmallerT::kBits < kBits, "Smaller type must be smaller");
 
-        /*
+        /**
             The bits in the smaller counter were all truncated from the correct
             value, so what needs to be determined now is all the higher bits.
 
@@ -290,6 +290,66 @@ public:
         }
 
         return result;
+    }
+
+    /// Expand from truncated counter without any bias
+    template<class SmallerT>
+    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncated(
+        const ThisType recent,
+        const SmallerT smaller)
+    {
+        static_assert(SmallerT::kBits < kBits, "Smaller type must be smaller");
+
+        ValueType smallerMSB = smaller.Value & SmallerT::kMSB;
+        SignedType smallerSigned = smaller.Value - (smallerMSB << 1);
+
+        SmallerT::ValueType smallRecent = static_cast<SmallerT::ValueType>(recent.Value & SmallerT::kMask);
+
+        // Signed gap = partial - prev
+        SmallerT::ValueType gap = static_cast<SmallerT::ValueType>(smallerSigned - smallRecent) & SmallerT::kMask;
+
+        ValueType gapMSB = gap & SmallerT::kMSB;
+        SignedType gapSigned = gap - (gapMSB << 1);
+
+        // Result = recent + gap
+        return recent.Value + gapSigned;
+    }
+
+    // Template specialization to optimize cases where the word size matches
+    // the field size.  Otherwise the extra sign handling above is not elided
+    // by the compiler's optimizer:
+
+    template<>
+    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncated(
+        const ThisType recent,
+        const Counter<uint32_t, 32> smaller)
+    {
+        static_assert(32 < kBits, "Smaller type must be smaller");
+
+        const int32_t gap = static_cast<int32_t>(smaller.Value - static_cast<uint32_t>(recent.Value));
+        return recent + gap;
+    }
+
+    template<>
+    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncated(
+        const ThisType recent,
+        const Counter<uint16_t, 16> smaller)
+    {
+        static_assert(16 < kBits, "Smaller type must be smaller");
+
+        const int16_t gap = static_cast<int16_t>( smaller.Value - static_cast<uint16_t>(recent.Value) );
+        return recent + gap;
+    }
+
+    template<>
+    static COUNTER_FORCE_INLINE ThisType ExpandFromTruncated(
+        const ThisType recent,
+        const Counter<uint8_t, 8> smaller)
+    {
+        static_assert(8 < kBits, "Smaller type must be smaller");
+
+        const int8_t gap = static_cast<int8_t>(smaller.Value - static_cast<uint8_t>(recent.Value));
+        return recent + gap;
     }
 
 
