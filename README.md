@@ -104,5 +104,3 @@ The ShorthairCodec object is not thread-safe, so be sure to hold a lock if multi
 Software by Christopher A. Taylor mrcatid@gmail.com
 
 Please reach out if you need support or would like to collaborate on a project.
-
-

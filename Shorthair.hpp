@@ -34,19 +34,15 @@
 /*
  * Shorthair Low-Latency Networking
  *
- * Shorthair provides channel modeling, security, and low-latency messaging.
+ * Shorthair provides channel modeling and low-latency messaging.
  *
  * It allows you to take any UDP/IP data stream and dial the packet loss rate
- * down as low as you like, while preventing tampering, and providing live
- * numbers for loss and latency.
- *
- * In short, it fixes the largest problems with using UDP/IP.
+ * down as low as you like and providing statistics for loss and latency.
  *
  * On top of Shorthair you can build any number of other transport protocols
  * involving ordered-reliable, ordered-unreliable, and unordered-unreliable
  * combinations.  As a black box you can treat it like normal UDP with some
- * nice additional features (security, very low loss) as otherwise it works
- * identically.
+ * nice additional features (very low loss).
  *
  * Remaining problems:
  *
